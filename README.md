@@ -5,7 +5,6 @@
 > 从「旅行安全」切入，构建可迁移的全球女性互助信用网络：  
 > **Knot（节点）** × **Bridge（桥梁）** → **Weave（织网）**
 
----
 
 ## ✨ What is HerWeave?
 HerWeave 是一个面向女性的旅行互助平台。用户可以发布与接取互助任务（如机场接送、紧急陪同、城市导览等），并通过链上记录生成可验证的声誉资产 **Weave Credits（织点）**。
@@ -15,7 +14,6 @@ HerWeave 是一个面向女性的旅行互助平台。用户可以发布与接�
 - **链上可验证**：互助完成后双方确认 → 链上 mint Credits
 - **可扩展**：旅行安全是起点，未来拓展到生活/技能/兴趣互助
 
----
 
 ## 🎯 MVP Goals (Hackathon)
 1. **任务板闭环**：发布任务（消耗 Credits）→ 接单 → 双方确认完成  
@@ -23,7 +21,6 @@ HerWeave 是一个面向女性的旅行互助平台。用户可以发布与接�
 3. **安全机制展示**：验证 + 任务期保护（MVP 演示版本）  
 4. **Pitch A→B 叙事**：旅行安全痛点 → 女性互助信用网络愿景
 
----
 
 ## 🧠 Core Concepts
 ### 1) Weave Credits（织点）
@@ -41,7 +38,6 @@ HerWeave 是一个面向女性的旅行互助平台。用户可以发布与接�
 - **Bridge（桥梁）**：每一次互助行为都是连接两个 Knot 的桥梁  
 - **Weave（织网）**：无数 Knot 与 Bridge 形成动态生长的 HerWeave 网络
 
----
 
 ## 🔄 Task Flow (MVP)
 1. **发布任务**：求助者 A 选择任务类型并消耗 Credits 发布  
@@ -52,7 +48,6 @@ HerWeave 是一个面向女性的旅行互助平台。用户可以发布与接�
 6. **链上记录**：系统验证双方确认后，为 B **mint 1 Credit**，记录互助历史  
 7. **争议处理**：任一方可申诉；MVP 阶段平台介入，未来引入仲裁机制
 
----
 
 ## 🛡️ Trust & Safety (MVP → Future)
 ### MVP（演示层）
@@ -65,7 +60,6 @@ HerWeave 是一个面向女性的旅行互助平台。用户可以发布与接�
 - “紧急 SOS” + 附近高信誉志愿者联动
 - **Vouch 担保体系**：高信用成员为新人背书，加速融入社区
 
----
 
 ## 🧩 Features (Current)
 - ✅ 连接钱包（MetaMask）
@@ -76,7 +70,6 @@ HerWeave 是一个面向女性的旅行互助平台。用户可以发布与接�
 
 > 未来增强：Gratitude Wall（感谢墙）、Connect（私信）、Vouch 担保、城市节点冷启动策略等
 
----
 
 ## 🖼️ Brand & Design System
 - **Terracotta（陶土红）**：`#C4715E`（Logo/标题/关键按钮）
@@ -85,7 +78,6 @@ HerWeave 是一个面向女性的旅行互助平台。用户可以发布与接�
 
 设计原则：温暖优先 · 留白呼吸 · 人情味 · 信息清晰 · 一致性
 
----
 
 ## 🏗️ Tech Stack
 - **Frontend**：Next.js (App Router) + TypeScript
