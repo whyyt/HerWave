@@ -487,6 +487,110 @@ export default function Home() {
       console.warn('Failed to save node positions:', error);
     }
   };
+
+  // 拖拽处理函数
+  const handleNodeMouseDown = (e: React.MouseEvent<SVGCircleElement>, node: NetworkNode) => {
+    e.stopPropagation();
+    const container = networkContainerRef.current;
+    if (!container) return;
+    
+    const svg = e.currentTarget.ownerSVGElement;
+    if (!svg) return;
+    
+    const containerRect = container.getBoundingClientRect();
+    const svgRect = svg.getBoundingClientRect();
+    
+    // 获取鼠标在容器中的位置
+    const mouseX = e.clientX - containerRect.left;
+    const mouseY = e.clientY - containerRect.top;
+    
+    // 将容器坐标转换为 SVG viewBox 坐标 (0-1000, 0-500)
+    const scaleX = 1000 / containerRect.width;
+    const scaleY = 500 / containerRect.height;
+    const svgX = mouseX * scaleX;
+    const svgY = mouseY * scaleY;
+    
+    // 获取节点当前在 viewBox 中的位置
+    const nodeX = (node.x / 100) * 1000;
+    const nodeY = (node.y / 100) * 500;
+    
+    // 计算偏移量
+    const offsetX = svgX - nodeX;
+    const offsetY = svgY - nodeY;
+    
+    setDraggingNode(node.id);
+    setDragStart({ x: mouseX, y: mouseY });
+    setDragOffset({ x: offsetX, y: offsetY });
+  };
+
+  const handleNodeMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (!draggingNode || !dragStart || !networkContainerRef.current) return;
+    
+    const container = networkContainerRef.current;
+    const containerRect = container.getBoundingClientRect();
+    
+    // 获取鼠标在容器中的位置
+    const mouseX = e.clientX - containerRect.left;
+    const mouseY = e.clientY - containerRect.top;
+    
+    // 计算鼠标移动的距离
+    const deltaX = mouseX - dragStart.x;
+    const deltaY = mouseY - dragStart.y;
+    
+    // 将容器坐标转换为 SVG viewBox 坐标的偏移量
+    const scaleX = 1000 / containerRect.width;
+    const scaleY = 500 / containerRect.height;
+    const offsetX = deltaX * scaleX;
+    const offsetY = deltaY * scaleY;
+    
+    setDragOffset({ x: offsetX, y: offsetY });
+  };
+
+  const handleNodeMouseUp = () => {
+    if (!draggingNode || !dragOffset) return;
+    
+    const node = nodes.find(n => n.id === draggingNode);
+    if (!node || !networkContainerRef.current) {
+      setDraggingNode(null);
+      setDragStart(null);
+      setDragOffset(null);
+      return;
+    }
+    
+    const container = networkContainerRef.current;
+    const containerRect = container.getBoundingClientRect();
+    
+    // 获取节点原始位置（百分比坐标转换为 viewBox 坐标）
+    const originalX = (node.x / 100) * 1000;
+    const originalY = (node.y / 100) * 500;
+    
+    // 计算新位置（viewBox 坐标）
+    const newX = originalX + dragOffset.x;
+    const newY = originalY + dragOffset.y;
+    
+    // 限制在 viewBox 范围内 (0-1000, 0-500)
+    const clampedX = Math.max(0, Math.min(1000, newX));
+    const clampedY = Math.max(0, Math.min(500, newY));
+    
+    // 转换回百分比坐标 (0-100)
+    const newPercentX = (clampedX / 1000) * 100;
+    const newPercentY = (clampedY / 500) * 100;
+    
+    // 更新节点位置
+    const updatedNodes = nodes.map(n => 
+      n.id === draggingNode 
+        ? { ...n, x: newPercentX, y: newPercentY }
+        : n
+    );
+    
+    setNodes(updatedNodes);
+    saveNodePositions(updatedNodes);
+    
+    // 重置拖拽状态
+    setDraggingNode(null);
+    setDragStart(null);
+    setDragOffset(null);
+  };
   
   // 音乐播放状态
   const [isPlaying, setIsPlaying] = useState(false);
@@ -2077,7 +2181,10 @@ export default function Home() {
                   viewBox="0 0 1000 500"
                   className="w-full h-full"
                   preserveAspectRatio="xMidYMid meet"
-                  style={{ cursor: 'default' }}
+                  style={{ cursor: draggingNode ? 'grabbing' : 'default' }}
+                  onMouseMove={handleNodeMouseMove}
+                  onMouseUp={handleNodeMouseUp}
+                  onMouseLeave={handleNodeMouseUp}
                 >
                   {/* 地图背景图片 - 最底层 */}
                   <image
@@ -2247,12 +2354,20 @@ export default function Home() {
                               transition: isDragging ? 'none' : 'all 0.3s ease',
                               transformOrigin: `${nodeX}px ${nodeY}px`
                             }}
+                            onMouseDown={(e) => {
+                              e.stopPropagation();
+                              handleNodeMouseDown(e, node);
+                            }}
                             onClick={(e) => {
+                              // 如果刚刚拖拽过，不触发点击事件
+                              if (draggingNode === node.id || (dragStart && dragOffset)) {
+                                e.stopPropagation();
+                                return;
+                              }
                               e.stopPropagation();
                               const container = networkContainerRef.current;
                               if (container) {
                                 const rect = container.getBoundingClientRect();
-                                const svgRect = (e.currentTarget.ownerSVGElement as SVGSVGElement).getBoundingClientRect();
                                 const scaleX = rect.width / 1000;
                                 const scaleY = rect.height / 500;
                                 const svgX = nodeX * scaleX;
@@ -2269,15 +2384,17 @@ export default function Home() {
                               setSelectedNode(node);
                             }}
                             onMouseEnter={(e) => {
-                              if (!selectedNode) {
+                              if (!selectedNode && !isDragging) {
                                 e.currentTarget.style.opacity = '1';
                                 e.currentTarget.setAttribute('r', String(nodeSize * 0.4));
                               }
                             }}
                             onMouseLeave={(e) => {
                               if (!selectedNode || selectedNode.id !== node.id) {
-                                e.currentTarget.style.opacity = String(isSelected ? 0.9 : 0.7);
-                                e.currentTarget.setAttribute('r', String(isSelected ? nodeSize * 0.4 : nodeSize * 0.25));
+                                if (!isDragging) {
+                                  e.currentTarget.style.opacity = String(isSelected ? 0.9 : 0.7);
+                                  e.currentTarget.setAttribute('r', String(isSelected ? nodeSize * 0.4 : nodeSize * 0.25));
+                                }
                               }
                             }}
                           />
