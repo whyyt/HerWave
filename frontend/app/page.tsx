@@ -37,9 +37,22 @@ const CONTRACT_ABI = [
 ];
 
 // 合约地址（每次重新部署后需要更新）
-const CONTRACT_ADDRESS = "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9";
+const CONTRACT_ADDRESS = "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9"; // 部署到 Sepolia 后需要更新
 
-// 本地链配置
+// Sepolia 测试网配置
+const SEPOLIA_CHAIN_CONFIG = {
+  chainId: '0xAA36A7', // 11155111 的十六进制
+  chainName: 'Sepolia',
+  nativeCurrency: {
+    name: 'Ether',
+    symbol: 'ETH',
+    decimals: 18,
+  },
+  rpcUrls: ['https://sepolia.infura.io/v3/YOUR_INFURA_KEY'], // 请替换为你的 Infura 或 Alchemy RPC URL
+  blockExplorerUrls: ['https://sepolia.etherscan.io'],
+};
+
+// 本地链配置（用于开发）
 const LOCAL_CHAIN_CONFIG = {
   chainId: '0x7A69', // 31337 的十六进制
   chainName: 'Hardhat Local',
@@ -455,11 +468,15 @@ export default function Home() {
       try {
         network = await provider.getNetwork();
         chainId = Number(network.chainId);
+        const SEPOLIA_CHAIN_ID = 11155111;
+        const LOCAL_CHAIN_IDS = [31337, 1337];
+        const isCorrectNetwork = chainId === SEPOLIA_CHAIN_ID || LOCAL_CHAIN_IDS.includes(chainId);
+        
         console.log('🌐 当前网络:', {
           chainId: chainId,
           name: network.name,
-          expectedChainId: [31337, 1337],
-          isCorrectNetwork: chainId === 31337 || chainId === 1337
+          expectedChainId: [SEPOLIA_CHAIN_ID, ...LOCAL_CHAIN_IDS],
+          isCorrectNetwork: isCorrectNetwork
         });
       } catch (networkError: any) {
         console.error('❌ 获取网络信息失败:', networkError);
@@ -467,10 +484,14 @@ export default function Home() {
         return false;
       }
       
-      // 验证网络是否正确
-      if (chainId !== 31337 && chainId !== 1337) {
-        console.warn('⚠️ 网络不匹配！当前链 ID:', chainId, '期望:', [31337, 1337]);
-        console.warn('💡 提示：请确保 MetaMask 已切换到本地链');
+      // 验证网络是否正确（支持 Sepolia 和本地链）
+      const SEPOLIA_CHAIN_ID = 11155111;
+      const LOCAL_CHAIN_IDS = [31337, 1337];
+      const isCorrectNetwork = chainId === SEPOLIA_CHAIN_ID || LOCAL_CHAIN_IDS.includes(chainId);
+      
+      if (!isCorrectNetwork) {
+        console.warn('⚠️ 网络不匹配！当前链 ID:', chainId, '期望:', [SEPOLIA_CHAIN_ID, ...LOCAL_CHAIN_IDS]);
+        console.warn('💡 提示：请确保 MetaMask 已切换到 Sepolia 测试网或本地链');
         setContractDeployed(false);
         return false;
       }
@@ -516,7 +537,7 @@ export default function Home() {
           chainId: chainId,
           expectedChainId: [31337, 1337]
         });
-        console.warn('💡 请运行: npx hardhat run scripts/deploy.js --network localhost');
+        console.warn('💡 请运行: npx hardhat run scripts/deploy.js --network sepolia');
         setContractDeployed(false);
       }
       
@@ -534,8 +555,8 @@ export default function Home() {
     }
   };
 
-  // 切换到本地链
-  const switchToLocalChain = async () => {
+  // 切换到 Sepolia 测试网
+  const switchToSepolia = async () => {
     if (typeof window.ethereum === 'undefined') {
       throw new Error('MetaMask 未安装');
     }
@@ -546,34 +567,36 @@ export default function Home() {
         method: 'eth_chainId',
       });
       
+      const SEPOLIA_CHAIN_ID = '0xAA36A7'; // 11155111
+      
       console.log('🔍 当前链 ID:', currentChainId);
       
-      // 如果已经是本地链，直接返回
-      if (currentChainId === LOCAL_CHAIN_CONFIG.chainId) {
-        console.log('✅ 已在本地链上');
+      // 如果已经是 Sepolia，直接返回
+      if (currentChainId === SEPOLIA_CHAIN_ID) {
+        console.log('✅ 已在 Sepolia 测试网');
         return;
       }
 
-      // 尝试切换到本地链
+      // 尝试切换到 Sepolia
       try {
         await window.ethereum.request({
           method: 'wallet_switchEthereumChain',
-          params: [{ chainId: LOCAL_CHAIN_CONFIG.chainId }],
+          params: [{ chainId: SEPOLIA_CHAIN_ID }],
         });
-        console.log('✅ 已切换到本地链');
+        console.log('✅ 已切换到 Sepolia 测试网');
       } catch (switchError: any) {
         // 如果链不存在，则添加它
         if (switchError.code === 4902 || switchError.code === -32603) {
-          console.log('📝 本地链不存在，正在添加...');
+          console.log('📝 Sepolia 测试网不存在，正在添加...');
           try {
             await window.ethereum.request({
               method: 'wallet_addEthereumChain',
-              params: [LOCAL_CHAIN_CONFIG],
+              params: [SEPOLIA_CHAIN_CONFIG],
             });
-            console.log('✅ 已添加并切换到本地链');
+            console.log('✅ 已添加并切换到 Sepolia 测试网');
           } catch (addError: any) {
-            console.error('❌ 添加本地链失败:', addError);
-            throw new Error('无法添加本地链，请手动在 MetaMask 中添加：\n网络名称: Hardhat Local\nRPC URL: http://127.0.0.1:8545\n链 ID: 31337');
+            console.error('❌ 添加 Sepolia 测试网失败:', addError);
+            throw new Error('无法添加 Sepolia 测试网，请手动在 MetaMask 中添加：\n网络名称: Sepolia\nRPC URL: https://sepolia.infura.io/v3/YOUR_INFURA_KEY\n链 ID: 11155111\n区块浏览器: https://sepolia.etherscan.io');
           }
         } else if (switchError.code === 4001) {
           // 用户拒绝了请求
@@ -649,10 +672,10 @@ export default function Home() {
       setContract(contract);
       setAccount(accounts[0]);
       
-      // 尝试切换到本地链（如果失败也不影响连接）
-      console.log('🔄 尝试切换到本地链...');
+      // 尝试切换到 Sepolia 测试网（如果失败也不影响连接）
+      console.log('🔄 尝试切换到 Sepolia 测试网...');
       try {
-        await switchToLocalChain();
+        await switchToSepolia();
         // 等待网络切换完成
         await new Promise(resolve => setTimeout(resolve, 1000));
       } catch (switchError: any) {
