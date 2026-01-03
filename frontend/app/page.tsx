@@ -347,10 +347,133 @@ export default function Home() {
   const [cardPosition, setCardPosition] = useState<{ x: number; y: number } | null>(null);
   const networkContainerRef = useRef<HTMLDivElement>(null);
   
-  // 节点拖拽状态
+  // 节点拖拽状态（互助广场）
   const [draggingNode, setDraggingNode] = useState<string | null>(null);
   const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
   const [dragOffset, setDragOffset] = useState<{ x: number; y: number } | null>(null);
+  
+  // 主页节点拖拽状态
+  const [draggingHomeNode, setDraggingHomeNode] = useState<string | null>(null);
+  const [homeDragStart, setHomeDragStart] = useState<{ x: number; y: number } | null>(null);
+  const [homeDragOffset, setHomeDragOffset] = useState<{ x: number; y: number } | null>(null);
+  
+  // 加载主页节点位置
+  const loadHomeHotspots = () => {
+    if (typeof window === 'undefined') return defaultHotspots;
+    try {
+      const saved = localStorage.getItem('herweave_home_hotspots');
+      if (saved) {
+        const savedPositions: Record<string, { x: number; y: number }> = JSON.parse(saved);
+        return defaultHotspots.map(hotspot => {
+          const savedPos = savedPositions[hotspot.label];
+          if (savedPos) {
+            return { ...hotspot, x: savedPos.x, y: savedPos.y };
+          }
+          return hotspot;
+        });
+      }
+    } catch (error) {
+      console.warn('Failed to load saved home hotspots:', error);
+    }
+    return defaultHotspots;
+  };
+  
+  const [homeHotspots, setHomeHotspots] = useState(() => loadHomeHotspots());
+  
+  // 保存主页节点位置
+  const saveHomeHotspots = (hotspots: typeof defaultHotspots) => {
+    if (typeof window === 'undefined') return;
+    try {
+      const positions: Record<string, { x: number; y: number }> = {};
+      hotspots.forEach(hotspot => {
+        positions[hotspot.label] = { x: hotspot.x, y: hotspot.y };
+      });
+      localStorage.setItem('herweave_home_hotspots', JSON.stringify(positions));
+    } catch (error) {
+      console.warn('Failed to save home hotspots:', error);
+    }
+  };
+  
+  // 主页节点拖拽处理函数
+  const handleHomeNodeMouseDown = (e: React.MouseEvent<SVGCircleElement>, hotspot: typeof defaultHotspots[0]) => {
+    e.stopPropagation();
+    const svg = e.currentTarget.ownerSVGElement;
+    if (!svg) return;
+    
+    const svgRect = svg.getBoundingClientRect();
+    const containerRect = svg.parentElement?.getBoundingClientRect();
+    if (!containerRect) return;
+    
+    // 获取鼠标在容器中的位置（百分比）
+    const mouseX = ((e.clientX - containerRect.left) / containerRect.width) * 100;
+    const mouseY = ((e.clientY - containerRect.top) / containerRect.height) * 100;
+    
+    // 计算偏移量
+    const offsetX = mouseX - hotspot.x;
+    const offsetY = mouseY - hotspot.y;
+    
+    setDraggingHomeNode(hotspot.label);
+    setHomeDragStart({ x: mouseX, y: mouseY });
+    setHomeDragOffset({ x: offsetX, y: offsetY });
+  };
+
+  const handleHomeNodeMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (!draggingHomeNode || !homeDragStart) return;
+    
+    const svg = e.currentTarget;
+    const containerRect = svg.parentElement?.getBoundingClientRect();
+    if (!containerRect) return;
+    
+    // 获取鼠标在容器中的位置（百分比）
+    const mouseX = ((e.clientX - containerRect.left) / containerRect.width) * 100;
+    const mouseY = ((e.clientY - containerRect.top) / containerRect.height) * 100;
+    
+    // 计算鼠标移动的距离
+    const deltaX = mouseX - homeDragStart.x;
+    const deltaY = mouseY - homeDragStart.y;
+    
+    setHomeDragOffset({ x: deltaX, y: deltaY });
+  };
+
+  const handleHomeNodeMouseUp = () => {
+    if (!draggingHomeNode || !homeDragOffset) {
+      setDraggingHomeNode(null);
+      setHomeDragStart(null);
+      setHomeDragOffset(null);
+      return;
+    }
+    
+    const hotspot = homeHotspots.find(h => h.label === draggingHomeNode);
+    if (!hotspot) {
+      setDraggingHomeNode(null);
+      setHomeDragStart(null);
+      setHomeDragOffset(null);
+      return;
+    }
+    
+    // 计算新位置（百分比坐标）
+    const newX = hotspot.x + homeDragOffset.x;
+    const newY = hotspot.y + homeDragOffset.y;
+    
+    // 限制在 viewBox 范围内 (0-100)
+    const clampedX = Math.max(0, Math.min(100, newX));
+    const clampedY = Math.max(0, Math.min(100, newY));
+    
+    // 更新节点位置
+    const updatedHotspots = homeHotspots.map(h => 
+      h.label === draggingHomeNode 
+        ? { ...h, x: clampedX, y: clampedY }
+        : h
+    );
+    
+    setHomeHotspots(updatedHotspots);
+    saveHomeHotspots(updatedHotspots);
+    
+    // 重置拖拽状态
+    setDraggingHomeNode(null);
+    setHomeDragStart(null);
+    setHomeDragOffset(null);
+  };
   
   // ============================================
   // 修复：使用 useMemo 生成确定性节点和连线
@@ -632,7 +755,7 @@ export default function Home() {
 
   // 生成编织线程动画（修复：使用确定性随机数）
   useEffect(() => {
-    const points = defaultHotspots.map(h => ({ x: h.x, y: h.y }));
+    const points = homeHotspots.map(h => ({ x: h.x, y: h.y }));
     if (points.length < 2) return;
 
     // 使用固定 seed 生成确定性动画参数
@@ -1776,6 +1899,10 @@ export default function Home() {
                 viewBox="0 0 100 100"
                 className="w-full h-full"
                 preserveAspectRatio="xMidYMid slice"
+                onMouseMove={handleHomeNodeMouseMove}
+                onMouseUp={handleHomeNodeMouseUp}
+                onMouseLeave={handleHomeNodeMouseUp}
+                style={{ cursor: draggingHomeNode ? 'grabbing' : 'default', pointerEvents: 'auto' }}
               >
                 <defs>
                   {/* 发光效果 */}
@@ -1833,22 +1960,31 @@ export default function Home() {
 
                 {/* 城市热点 */}
                 <g className="city-hotspots">
-                  {defaultHotspots.map((city, index) => {
+                  {homeHotspots.map((city, index) => {
                     const size = 1.2;
                     const isHovered = hoveredCity === city.label;
+                    const isDragging = draggingHomeNode === city.label;
+                    
+                    // 如果正在拖拽，应用偏移量
+                    let cityX = city.x;
+                    let cityY = city.y;
+                    if (isDragging && homeDragOffset) {
+                      cityX += homeDragOffset.x;
+                      cityY += homeDragOffset.y;
+                    }
                     
                     return (
                       <g 
                         key={city.label}
-                        className="city-point cursor-pointer"
-                        onMouseEnter={() => setHoveredCity(city.label)}
-                        onMouseLeave={() => setHoveredCity(null)}
+                        className="city-point"
+                        onMouseEnter={() => !isDragging && setHoveredCity(city.label)}
+                        onMouseLeave={() => !isDragging && setHoveredCity(null)}
                         style={{ pointerEvents: 'auto' }}
                       >
                         {/* 外圈脉冲 - 更柔和 */}
                         <circle
-                          cx={city.x}
-                          cy={city.y}
+                          cx={cityX}
+                          cy={cityY}
                           r={size * 2.5}
                           fill="none"
                           stroke="#D4A5A5"
@@ -1856,40 +1992,51 @@ export default function Home() {
                           opacity="0.4"
                           className="pulse-ring"
                           style={{
-                            animation: `pulse 3s ease-out infinite`,
+                            animation: isDragging ? 'none' : `pulse 3s ease-out infinite`,
                             animationDelay: `${index * 0.4}s`,
-                            transformOrigin: `${city.x}px ${city.y}px`
+                            transformOrigin: `${cityX}px ${cityY}px`,
+                            pointerEvents: 'none'
                           }}
                         />
                         
                         {/* 柔和光晕 */}
                         <circle
-                          cx={city.x}
-                          cy={city.y}
+                          cx={cityX}
+                          cy={cityY}
                           r={size * 1.8}
                           fill="#D4A5A5"
                           opacity="0.15"
                           filter="url(#softCityGlow)"
+                          style={{ pointerEvents: 'none' }}
                         />
                         
                         {/* 中间层 - 灰粉色 */}
                         <circle
-                          cx={city.x}
-                          cy={city.y}
+                          cx={cityX}
+                          cy={cityY}
                           r={size * 0.8}
                           fill="#D4A5A5"
                           opacity="0.4"
+                          style={{ pointerEvents: 'none' }}
                         />
                         
                         {/* 核心点 - 更小更精致 */}
                         <circle
-                          cx={city.x}
-                          cy={city.y}
+                          cx={cityX}
+                          cy={cityY}
                           r={isHovered ? size * 0.4 : size * 0.25}
                           fill="#C4715E"
                           opacity="0.6"
                           filter="url(#cityGlow)"
-                          className="transition-all duration-300"
+                          className={isDragging ? '' : 'transition-all duration-300'}
+                          style={{ 
+                            cursor: isDragging ? 'grabbing' : 'grab',
+                            pointerEvents: 'auto'
+                          }}
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            handleHomeNodeMouseDown(e, city);
+                          }}
                         />
                       </g>
                     );
@@ -1898,12 +2045,12 @@ export default function Home() {
               </svg>
 
               {/* Hover 城市标签 */}
-              {hoveredCity && (
+              {hoveredCity && !draggingHomeNode && (
                 <div 
                   className="absolute pointer-events-none z-20 px-3 py-2 rounded-full backdrop-blur-sm border shadow-lg"
                   style={{
-                    left: `${(defaultHotspots.find(c => c.label === hoveredCity)?.x || 50)}%`,
-                    top: `${(defaultHotspots.find(c => c.label === hoveredCity)?.y || 50) - 8}%`,
+                    left: `${(homeHotspots.find(c => c.label === hoveredCity)?.x || 50)}%`,
+                    top: `${(homeHotspots.find(c => c.label === hoveredCity)?.y || 50) - 8}%`,
                     transform: 'translate(-50%, -100%)',
                     background: 'rgba(255, 255, 255, 0.9)',
                     borderColor: '#D4A5A5',
@@ -2181,10 +2328,7 @@ export default function Home() {
                   viewBox="0 0 1000 500"
                   className="w-full h-full"
                   preserveAspectRatio="xMidYMid meet"
-                  style={{ cursor: draggingNode ? 'grabbing' : 'default' }}
-                  onMouseMove={handleNodeMouseMove}
-                  onMouseUp={handleNodeMouseUp}
-                  onMouseLeave={handleNodeMouseUp}
+                  style={{ cursor: 'default' }}
                 >
                   {/* 地图背景图片 - 最底层 */}
                   <image
@@ -2350,20 +2494,11 @@ export default function Home() {
                             opacity={isSelected ? 0.9 : 0.7}
                             filter="url(#cityGlow)"
                             style={{ 
-                              cursor: isDragging ? 'grabbing' : 'grab',
-                              transition: isDragging ? 'none' : 'all 0.3s ease',
+                              cursor: 'pointer',
+                              transition: 'all 0.3s ease',
                               transformOrigin: `${nodeX}px ${nodeY}px`
                             }}
-                            onMouseDown={(e) => {
-                              e.stopPropagation();
-                              handleNodeMouseDown(e, node);
-                            }}
                             onClick={(e) => {
-                              // 如果刚刚拖拽过，不触发点击事件
-                              if (draggingNode === node.id || (dragStart && dragOffset)) {
-                                e.stopPropagation();
-                                return;
-                              }
                               e.stopPropagation();
                               const container = networkContainerRef.current;
                               if (container) {
@@ -2384,17 +2519,15 @@ export default function Home() {
                               setSelectedNode(node);
                             }}
                             onMouseEnter={(e) => {
-                              if (!selectedNode && !isDragging) {
+                              if (!selectedNode) {
                                 e.currentTarget.style.opacity = '1';
                                 e.currentTarget.setAttribute('r', String(nodeSize * 0.4));
                               }
                             }}
                             onMouseLeave={(e) => {
                               if (!selectedNode || selectedNode.id !== node.id) {
-                                if (!isDragging) {
-                                  e.currentTarget.style.opacity = String(isSelected ? 0.9 : 0.7);
-                                  e.currentTarget.setAttribute('r', String(isSelected ? nodeSize * 0.4 : nodeSize * 0.25));
-                                }
+                                e.currentTarget.style.opacity = String(isSelected ? 0.9 : 0.7);
+                                e.currentTarget.setAttribute('r', String(isSelected ? nodeSize * 0.4 : nodeSize * 0.25));
                               }
                             }}
                           />
@@ -2965,10 +3098,6 @@ export default function Home() {
                     </div>
                   </div>
 
-                  <div className="border-t pt-6" style={{ borderColor: '#E8D5D5' }}>
-                    <h4 className="text-h3 mb-2" style={{ color: '#2C2C2C' }}>钱包地址</h4>
-                    <p className="text-caption font-mono" style={{ color: '#8A8A8A' }}>{account}</p>
-                  </div>
                 </div>
                 
                 {/* 所有活动卡片 - 合并显示 */}
