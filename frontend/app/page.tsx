@@ -37,7 +37,7 @@ const CONTRACT_ABI = [
 ];
 
 // 合约地址（每次重新部署后需要更新）
-const CONTRACT_ADDRESS = "0xcdd5fD791a708c0eF08605ee0f4e3F767bcDDa67"; // Sepolia 测试网
+const CONTRACT_ADDRESS = "0xC2E45590a14C638662966573B6982b25bbbe6dFe"; // Sepolia 测试网
 
 // Sepolia 测试网配置
 const SEPOLIA_CHAIN_CONFIG = {
@@ -129,13 +129,12 @@ interface NetworkEdge {
 // 城市坐标映射（百分比位置）
 const cityPositions: Record<string, { x: number; y: number }> = {
   // 亚洲
-  "东京": { x: 82, y: 38 },
   "首尔": { x: 78, y: 36 },
   "北京": { x: 75, y: 32 },
   "上海": { x: 77, y: 40 },
   "香港": { x: 74, y: 48 },
   "台北": { x: 77, y: 46 },
-  "曼谷": { x: 68, y: 52 },
+  "俄罗斯": { x: 68, y: 52 },
   "新加坡": { x: 68, y: 62 },
   "吉隆坡": { x: 67, y: 60 },
   "河内": { x: 70, y: 48 },
@@ -144,10 +143,10 @@ const cityPositions: Record<string, { x: number; y: number }> = {
   "大阪": { x: 80, y: 40 },
   "京都": { x: 79, y: 40 },
   // 欧洲
-  "巴黎": { x: 48, y: 30 },
+  "埃及": { x: 48, y: 30 },
   "伦敦": { x: 46, y: 26 },
-  "柏林": { x: 52, y: 28 },
-  "罗马": { x: 52, y: 36 },
+  "冰岛": { x: 52, y: 28 },
+  "柏林": { x: 52, y: 36 },
   "马德里": { x: 44, y: 36 },
   "阿姆斯特丹": { x: 49, y: 26 },
   "维也纳": { x: 54, y: 30 },
@@ -159,7 +158,7 @@ const cityPositions: Record<string, { x: number; y: number }> = {
   "旧金山": { x: 12, y: 38 },
   "西雅图": { x: 13, y: 30 },
   "芝加哥": { x: 20, y: 34 },
-  "多伦多": { x: 22, y: 32 },
+  "加拿大": { x: 22, y: 32 },
   "温哥华": { x: 12, y: 28 },
   // 大洋洲
   "悉尼": { x: 86, y: 76 },
@@ -1617,8 +1616,11 @@ export default function Home() {
       return;
     }
 
-    // 先获取 helperAddress
-    const request = helpState.requests.find(r => r.id === requestId);
+    // 先获取 helperAddress（从 helpState 或链上请求中查找）
+    let request = helpState.requests.find(r => r.id === requestId);
+    if (!request) {
+      request = requests.find(r => r.id === requestId);
+    }
     const helperAddress = request?.helper;
     if (!helperAddress) {
       setToastMessage('未找到帮助者信息');
@@ -1658,6 +1660,7 @@ export default function Home() {
 
     // 更新用户的 totalReceived（被帮助者）和 totalHelps（帮助者）
     // 被帮助者（requesterAddress）的 totalReceived +1
+    // 如果被帮助者是当前用户，更新 totalReceived
     if (user && account.toLowerCase() === requesterAddress.toLowerCase()) {
       setUser({
         ...user,
@@ -1666,8 +1669,8 @@ export default function Home() {
     }
     
     // 帮助者（helperAddress）的 totalHelps +1
-    // 如果帮助者是当前用户，直接更新
-    if (helperAddress.toLowerCase() === account.toLowerCase()) {
+    // 如果帮助者是当前用户，直接更新前端状态
+    if (helperAddress && helperAddress.toLowerCase() === account.toLowerCase()) {
       if (user) {
         setUser({
           ...user,
@@ -1675,9 +1678,21 @@ export default function Home() {
         });
       }
     }
-    // 如果帮助者不是当前用户，需要重新加载帮助者的信息
-    // 这里暂时只更新当前用户的信息
-    // TODO: 如果需要显示其他用户的信息，需要单独加载
+    
+    // 重新加载当前用户信息，确保统计数据同步
+    // 这样无论帮助者是否是当前用户，都能看到更新后的数字
+    if (contract && account) {
+      // 延迟重新加载用户信息，确保统计数据更新
+      setTimeout(async () => {
+        try {
+          await loadUser(account, contract);
+          // 如果帮助者也是当前用户（即帮助者和被帮助者是同一个人），
+          // 重新加载后 totalHelps 和 totalReceived 都会更新
+        } catch (error) {
+          console.warn('重新加载用户信息失败:', error);
+        }
+      }, 1000);
+    }
 
     setToastMessage('✅ 已完成！帮助者获得 +1 Wave');
     setTimeout(() => setToastMessage(null), 3000);
@@ -2991,7 +3006,6 @@ export default function Home() {
         ) : currentView === 'create' ? (
           // 创建请求
           <div className="max-w-2xl mx-auto">
-            <h2 className="text-h1 mb-6" style={{ color: '#2C2C2C' }}>发布互助请求</h2>
             <div className="card p-8">
               <div className="space-y-6">
                 <div>
@@ -3028,7 +3042,7 @@ export default function Home() {
                     type="text"
                     value={reqLocation}
                     onChange={(e) => setReqLocation(e.target.value)}
-                    placeholder="例如：东京，日本"
+                    placeholder="例如：北京，加拿大"
                     className="w-full px-4 py-3 border rounded-lg text-body focus:outline-none focus:ring-2"
                     style={{ borderColor: '#E8D5D5', background: '#FFFFFF', color: '#2C2C2C' }}
                   />
