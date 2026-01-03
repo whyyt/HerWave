@@ -37,7 +37,7 @@ const CONTRACT_ABI = [
 ];
 
 // 合约地址（每次重新部署后需要更新）
-const CONTRACT_ADDRESS = "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9"; // 部署到 Sepolia 后需要更新
+const CONTRACT_ADDRESS = "0x3CF026df764780a5a3bB54db40850f23c95081C1"; // Sepolia 测试网
 
 // Sepolia 测试网配置
 const SEPOLIA_CHAIN_CONFIG = {
