@@ -180,10 +180,10 @@ const cityPositions: Record<string, { x: number; y: number }> = {
 // 默认热点城市位置
 const defaultHotspots = [
   { x: 68, y: 52, label: "曼谷" },
-  { x: 86, y: 36, label: "首尔" },
+  { x: 88, y: 40, label: "首尔" },
   { x: 77, y: 46, label: "台北" },
-  { x: 38, y: 34, label: "纽约" },
-  { x: 92, y: 76, label: "悉尼" },
+  { x: 80, y: 34, label: "纽约" },
+  { x: 86, y: 70, label: "悉尼" },
 ];
 
 // ============================================
@@ -1961,7 +1961,7 @@ export default function Home() {
                 {/* 城市热点 */}
                 <g className="city-hotspots">
                   {homeHotspots.map((city, index) => {
-                    const size = 1.2;
+                    const size = 1.5;
                     const isHovered = hoveredCity === city.label;
                     const isDragging = draggingHomeNode === city.label;
                     
@@ -2058,7 +2058,7 @@ export default function Home() {
                     pointerEvents: 'none'
                   }}
                 >
-                  <span className="text-sm font-medium">{hoveredCity}</span>
+                  <span className="text-base font-medium">{hoveredCity}</span>
                 </div>
               )}
 
@@ -2117,7 +2117,7 @@ export default function Home() {
                     src="/HerWeave.png" 
                     alt="HerWeave Logo" 
                     style={{ 
-                      width: '380px',
+                      width: '450px',
                       height: 'auto',
                       maxWidth: '100%',
                       display: 'block'
@@ -2145,7 +2145,7 @@ export default function Home() {
                 {/* 主标语 */}
                 <div className="space-y-3">
                   <p 
-                    className="text-2xl md:text-3xl lg:text-4xl font-semibold leading-tight"
+                    className="text-3xl md:text-4xl lg:text-5xl font-semibold leading-tight"
                     style={{ 
                       letterSpacing: '0.02em'
                     }}
@@ -2178,7 +2178,7 @@ export default function Home() {
 
                 {/* 描述文字 */}
                 <p 
-                  className="text-base md:text-lg leading-relaxed max-w-lg"
+                  className="text-lg md:text-xl leading-relaxed max-w-lg"
                   style={{ color: '#8A8A8A' }}
                 >
                   基于 Web3 信任机制的女性旅行互助网络，让女性在跨国旅行中可以彼此支持、互相交换帮助，缓解独自旅行时的信息差与安全信任问题。
@@ -2236,11 +2236,11 @@ export default function Home() {
                       border: '1px solid rgba(212, 165, 165, 0.2)'
                     }}
                   >
-                    <div className="text-2xl">
+                    <div className="text-3xl">
                       🛏️
                     </div>
                     <p 
-                      className="text-sm font-normal"
+                      className="text-base font-normal"
                       style={{ color: '#5A5A5A' }}
                     >
                       借住一晚
@@ -2253,11 +2253,11 @@ export default function Home() {
                       border: '1px solid rgba(212, 165, 165, 0.2)'
                     }}
                   >
-                    <div className="text-2xl">
+                    <div className="text-3xl">
                       🏛️
                     </div>
                     <p 
-                      className="text-sm font-normal"
+                      className="text-base font-normal"
                       style={{ color: '#5A5A5A' }}
                     >
                       一起探索
@@ -2270,11 +2270,11 @@ export default function Home() {
                       border: '1px solid rgba(212, 165, 165, 0.2)'
                     }}
                   >
-                    <div className="text-2xl">
+                    <div className="text-3xl">
                       🚗
                     </div>
                     <p 
-                      className="text-sm font-normal"
+                      className="text-base font-normal"
                       style={{ color: '#5A5A5A' }}
                     >
                       接送一程
