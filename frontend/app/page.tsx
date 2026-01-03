@@ -37,7 +37,7 @@ const CONTRACT_ABI = [
 ];
 
 // 合约地址（每次重新部署后需要更新）
-const CONTRACT_ADDRESS = "0x9f4Fe66034468092a99EBe72D029F1E1d2A24D32"; // Sepolia 测试网
+const CONTRACT_ADDRESS = "0xcdd5fD791a708c0eF08605ee0f4e3F767bcDDa67"; // Sepolia 测试网
 
 // Sepolia 测试网配置
 const SEPOLIA_CHAIN_CONFIG = {
@@ -180,10 +180,10 @@ const cityPositions: Record<string, { x: number; y: number }> = {
 // 默认热点城市位置
 const defaultHotspots = [
   { x: 68, y: 52, label: "曼谷" },
-  { x: 88, y: 40, label: "首尔" },
+  { x: 86, y: 36, label: "首尔" },
   { x: 77, y: 46, label: "台北" },
-  { x: 80, y: 34, label: "纽约" },
-  { x: 86, y: 70, label: "悉尼" },
+  { x: 38, y: 34, label: "纽约" },
+  { x: 92, y: 76, label: "悉尼" },
 ];
 
 // ============================================
@@ -364,18 +364,34 @@ export default function Home() {
       const saved = localStorage.getItem('herweave_home_hotspots');
       if (saved) {
         const savedPositions: Record<string, { x: number; y: number }> = JSON.parse(saved);
-        return defaultHotspots.map(hotspot => {
+        // 检查是否有"悉尼"节点需要移动到"接送一程"上方
+        const updatedHotspots = defaultHotspots.map(hotspot => {
           const savedPos = savedPositions[hotspot.label];
           if (savedPos) {
+            // 如果是"悉尼"节点，且位置不在"接送一程"上方，则移动到上方
+            if (hotspot.label === "悉尼" && savedPos.y > 30) {
+              return { ...hotspot, x: 85, y: 25 };
+            }
             return { ...hotspot, x: savedPos.x, y: savedPos.y };
+          }
+          // 如果是"悉尼"节点，默认移动到"接送一程"上方
+          if (hotspot.label === "悉尼") {
+            return { ...hotspot, x: 85, y: 25 };
           }
           return hotspot;
         });
+        return updatedHotspots;
       }
     } catch (error) {
       console.warn('Failed to load saved home hotspots:', error);
     }
-    return defaultHotspots;
+    // 默认位置：将"悉尼"节点移动到"接送一程"上方
+    return defaultHotspots.map(hotspot => {
+      if (hotspot.label === "悉尼") {
+        return { ...hotspot, x: 85, y: 25 };
+      }
+      return hotspot;
+    });
   };
   
   const [homeHotspots, setHomeHotspots] = useState(() => loadHomeHotspots());
@@ -1452,6 +1468,15 @@ export default function Home() {
       return;
     }
     
+    // 检查 Wave 余额
+    const requiredWave = waveCosts[reqHelpType];
+    const currentWave = getUserWave(account);
+    if (currentWave < requiredWave) {
+      setToastMessage(`Wave 余额不足！需要 ${requiredWave} Wave，当前余额 ${currentWave} Wave`);
+      setTimeout(() => setToastMessage(null), 3000);
+      return;
+    }
+    
     setLoading(true);
     try {
       // TODO: 未来对接合约
@@ -1459,6 +1484,28 @@ export default function Home() {
       //   const tx = await contract.createRequest(reqTitle, reqDescription, reqLocation, reqHelpType);
       //   await tx.wait();
       // }
+      
+      // 扣除 Wave
+      setHelpState(prevState => {
+        const updatedProfiles = { ...prevState.profiles };
+        if (!updatedProfiles[account]) {
+          updatedProfiles[account] = { address: account, wave: 0 };
+        }
+        updatedProfiles[account].wave = Math.max(0, updatedProfiles[account].wave - requiredWave);
+        
+        // 如果链上也有 wave，需要同时扣除
+        if (user) {
+          setUser({
+            ...user,
+            wave: Math.max(0, user.wave - requiredWave)
+          });
+        }
+        
+        return {
+          ...prevState,
+          profiles: updatedProfiles
+        };
+      });
       
       // 本地状态：创建新请求
       const newRequest: Request = {
@@ -1494,7 +1541,7 @@ export default function Home() {
         await loadRequests(contract);
       }
       
-      setToastMessage('✅ 请求发布成功！');
+      setToastMessage(`✅ 请求发布成功！已扣除 ${requiredWave} Wave`);
       setTimeout(() => setToastMessage(null), 3000);
       setCurrentView('dashboard');
     } catch (error: any) {
@@ -1570,38 +1617,67 @@ export default function Home() {
       return;
     }
 
+    // 先获取 helperAddress
+    const request = helpState.requests.find(r => r.id === requestId);
+    const helperAddress = request?.helper;
+    if (!helperAddress) {
+      setToastMessage('未找到帮助者信息');
+      setTimeout(() => setToastMessage(null), 3000);
+      return;
+    }
+
     setHelpState(prevState => {
-      const request = prevState.requests.find(r => r.id === requestId);
-      if (!request || request.waveRewarded) {
+      const req = prevState.requests.find(r => r.id === requestId);
+      if (!req || req.waveRewarded) {
         return prevState;
       }
 
-      const helperAddress = request.helper;
-      if (!helperAddress) return prevState;
-
-      const updatedRequests = prevState.requests.map(req => {
-        if (req.id === requestId) {
+      const updatedRequests = prevState.requests.map(r => {
+        if (r.id === requestId) {
           return {
-            ...req,
+            ...r,
             status: 2,
             statusNew: 'COMPLETED' as RequestStatus,
             nftMinted: true,
             waveRewarded: true
           };
         }
-        return req;
+        return r;
       });
 
       const updatedProfiles = { ...prevState.profiles };
       if (!updatedProfiles[helperAddress]) {
         updatedProfiles[helperAddress] = { address: helperAddress, wave: 0 };
-        }
+      }
       updatedProfiles[helperAddress].wave += 1;
 
       const newState = { requests: updatedRequests, profiles: updatedProfiles };
       saveHelpState(newState);
       return newState;
     });
+
+    // 更新用户的 totalReceived（被帮助者）和 totalHelps（帮助者）
+    // 被帮助者（requesterAddress）的 totalReceived +1
+    if (user && account.toLowerCase() === requesterAddress.toLowerCase()) {
+      setUser({
+        ...user,
+        totalReceived: (user.totalReceived || 0) + 1
+      });
+    }
+    
+    // 帮助者（helperAddress）的 totalHelps +1
+    // 如果帮助者是当前用户，直接更新
+    if (helperAddress.toLowerCase() === account.toLowerCase()) {
+      if (user) {
+        setUser({
+          ...user,
+          totalHelps: (user.totalHelps || 0) + 1
+        });
+      }
+    }
+    // 如果帮助者不是当前用户，需要重新加载帮助者的信息
+    // 这里暂时只更新当前用户的信息
+    // TODO: 如果需要显示其他用户的信息，需要单独加载
 
     setToastMessage('✅ 已完成！帮助者获得 +1 Wave');
     setTimeout(() => setToastMessage(null), 3000);
@@ -1961,7 +2037,7 @@ export default function Home() {
                 {/* 城市热点 */}
                 <g className="city-hotspots">
                   {homeHotspots.map((city, index) => {
-                    const size = 1.5;
+                    const size = 1.2;
                     const isHovered = hoveredCity === city.label;
                     const isDragging = draggingHomeNode === city.label;
                     
@@ -2058,7 +2134,7 @@ export default function Home() {
                     pointerEvents: 'none'
                   }}
                 >
-                  <span className="text-base font-medium">{hoveredCity}</span>
+                  <span className="text-sm font-medium">{hoveredCity}</span>
                 </div>
               )}
 
@@ -2130,7 +2206,7 @@ export default function Home() {
               <div className="flex flex-col space-y-6 lg:space-y-8">
                 {/* 品牌名称 */}
                 <h1 
-                  className="text-5xl md:text-6xl lg:text-7xl font-medium leading-tight"
+                  className="text-6xl md:text-7xl lg:text-8xl font-medium leading-tight"
                   style={{ 
                     letterSpacing: '-0.03em',
                     background: 'linear-gradient(135deg, #C4715E 0%, #A05A48 100%)',
@@ -2145,7 +2221,7 @@ export default function Home() {
                 {/* 主标语 */}
                 <div className="space-y-3">
                   <p 
-                    className="text-3xl md:text-4xl lg:text-5xl font-semibold leading-tight"
+                    className="text-3xl md:text-4xl lg:text-5xl font-semibold leading-tight whitespace-nowrap"
                     style={{ 
                       letterSpacing: '0.02em'
                     }}
@@ -2188,10 +2264,10 @@ export default function Home() {
                 {!account ? (
                   <div className="pt-2">
                     <div
-                      className="text-base px-8 py-3.5"
+                      className="text-lg px-8 py-3.5"
                       style={{ 
-                        fontSize: '16px',
-                        padding: '14px 40px',
+                        fontSize: '18px',
+                        padding: '16px 48px',
                         color: '#FFFFFF',
                         fontWeight: '500',
                         pointerEvents: 'none',
@@ -2208,10 +2284,10 @@ export default function Home() {
                 ) : (
                   <div className="pt-2">
                     <div
-                      className="text-base px-8 py-3.5"
+                      className="text-lg px-8 py-3.5"
                       style={{ 
-                        fontSize: '16px',
-                        padding: '14px 40px',
+                        fontSize: '18px',
+                        padding: '16px 48px',
                         color: '#FFFFFF',
                         fontWeight: '500',
                         pointerEvents: 'none',
@@ -2230,7 +2306,7 @@ export default function Home() {
                 {/* 服务选项 - 横向排列 */}
                 <div className="grid grid-cols-3 gap-4 pt-4">
                   <div 
-                    className="flex flex-row items-center gap-2 p-3 rounded-lg transition-all duration-300 cursor-pointer"
+                    className="flex flex-row items-center gap-2 p-4 rounded-lg transition-all duration-300 cursor-pointer"
                     style={{ 
                       background: 'rgba(255, 255, 255, 0.3)',
                       border: '1px solid rgba(212, 165, 165, 0.2)'
@@ -2247,7 +2323,7 @@ export default function Home() {
                     </p>
                   </div>
                   <div 
-                    className="flex flex-row items-center gap-2 p-3 rounded-lg transition-all duration-300 cursor-pointer"
+                    className="flex flex-row items-center gap-2 p-4 rounded-lg transition-all duration-300 cursor-pointer"
                     style={{ 
                       background: 'rgba(255, 255, 255, 0.3)',
                       border: '1px solid rgba(212, 165, 165, 0.2)'
@@ -2264,7 +2340,7 @@ export default function Home() {
                     </p>
                   </div>
                   <div 
-                    className="flex flex-row items-center gap-2 p-3 rounded-lg transition-all duration-300 cursor-pointer"
+                    className="flex flex-row items-center gap-2 p-4 rounded-lg transition-all duration-300 cursor-pointer relative"
                     style={{ 
                       background: 'rgba(255, 255, 255, 0.3)',
                       border: '1px solid rgba(212, 165, 165, 0.2)'
