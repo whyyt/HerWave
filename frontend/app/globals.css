@@ -1,0 +1,257 @@
+@import "tailwindcss";
+
+/* HerWeave 品牌色彩系统 */
+:root {
+  /* 主色调 - 陶土红 */
+  --terracotta: #C4715E;
+  --terracotta-dark: #A05A48;
+  
+  /* 辅助色 - 米白色 */
+  --cream: #F5F1E8;
+  
+  /* 点缀色 - 灰粉色 */
+  --dusty-rose: #D4A5A5;
+  --dusty-rose-light: #E8D5D5;
+  
+  /* 基础色 */
+  --white: #FFFFFF;
+  --text-dark: #2C2C2C;
+  --text-medium: #5A5A5A;
+  --text-light: #8A8A8A;
+  
+  /* 背景 */
+  --background: #F5F1E8;
+  --foreground: #2C2C2C;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-terracotta: var(--terracotta);
+  --color-cream: var(--cream);
+  --color-dusty-rose: var(--dusty-rose);
+  --font-sans: var(--font-geist-sans), "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "WenQuanYi Micro Hei", sans-serif;
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--cream);
+  color: var(--text-dark);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 自定义滚动条 - 使用品牌色 */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(196, 113, 94, 0.3);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(196, 113, 94, 0.5);
+}
+
+/* 动画效果 */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.3s ease-out;
+}
+
+/* HerWeave 品牌样式 */
+.brand-herweave {
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.brand-terracotta {
+  color: var(--terracotta);
+}
+
+.brand-text-dark {
+  color: var(--text-dark);
+}
+
+/* 编织纹理背景 */
+.weave-pattern {
+  position: relative;
+  overflow: hidden;
+}
+
+.weave-pattern::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-image: 
+    repeating-linear-gradient(
+      45deg,
+      transparent,
+      transparent 10px,
+      rgba(196, 113, 94, 0.03) 10px,
+      rgba(196, 113, 94, 0.03) 20px
+    ),
+    repeating-linear-gradient(
+      -45deg,
+      transparent,
+      transparent 10px,
+      rgba(196, 113, 94, 0.03) 10px,
+      rgba(196, 113, 94, 0.03) 20px
+    );
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* 网络可视化效果 - 使用品牌色 */
+.network-background {
+  position: relative;
+  overflow: hidden;
+}
+
+.network-circle {
+  position: absolute;
+  border: 1px solid rgba(196, 113, 94, 0.15);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.network-dot {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: var(--terracotta);
+  border-radius: 50%;
+  box-shadow: 0 0 10px rgba(196, 113, 94, 0.5), 0 0 20px rgba(196, 113, 94, 0.3);
+  pointer-events: none;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.network-line {
+  position: absolute;
+  border-top: 1px dashed rgba(196, 113, 94, 0.25);
+  pointer-events: none;
+}
+
+/* 流动曲线 */
+.flow-curve {
+  position: absolute;
+  border: 2px solid var(--dusty-rose);
+  border-radius: 50%;
+  opacity: 0.2;
+  pointer-events: none;
+}
+
+/* 圆润按钮 */
+.btn-primary {
+  background-color: var(--terracotta);
+  color: var(--white);
+  border-radius: 50px;
+  padding: 12px 32px;
+  font-weight: 500;
+  transition: all 0.3s ease;
+  border: none;
+  cursor: pointer;
+}
+
+.btn-primary:hover {
+  background-color: var(--terracotta-dark);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(196, 113, 94, 0.3);
+}
+
+.btn-secondary {
+  background-color: transparent;
+  color: var(--terracotta);
+  border: 2px solid var(--terracotta);
+  border-radius: 50px;
+  padding: 12px 32px;
+  font-weight: 500;
+  transition: all 0.3s ease;
+  cursor: pointer;
+}
+
+.btn-secondary:hover {
+  background-color: var(--terracotta);
+  color: var(--white);
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.2);
+  }
+}
+
+/* 卡片样式 */
+.card {
+  background: var(--white);
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  transition: all 0.3s ease;
+}
+
+.card:hover {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  transform: translateY(-2px);
+}
+
+/* 文字层级 */
+.text-h1 {
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--text-dark);
+}
+
+.text-h2 {
+  font-size: 24px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--text-dark);
+}
+
+.text-h3 {
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--text-dark);
+}
+
+.text-body {
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1.6;
+  color: var(--text-medium);
+}
+
+.text-caption {
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--text-light);
+}

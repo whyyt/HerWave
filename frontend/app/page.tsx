@@ -1,0 +1,2302 @@
+'use client';
+
+import { useState, useEffect, useRef } from 'react';
+import { ethers } from 'ethers';
+
+// 扩展 Window 接口以支持 ethereum
+declare global {
+  interface Window {
+    ethereum?: {
+      request: (args: { method: string; params?: any[] }) => Promise<any>;
+      send: (method: string, params?: any[]) => Promise<any>;
+      isMetaMask?: boolean;
+    };
+  }
+}
+
+// 智能合约 ABI（简化版，实际使用时需要完整 ABI）
+const CONTRACT_ABI = [
+  "function registerUser(string memory _name, string memory _location) public",
+  "function createRequest(string memory _title, string memory _description, string memory _location, uint256 _helpType) public",
+  "function acceptRequest(uint256 _requestId) public",
+  "function completeRequest(uint256 _requestId) public",
+  "function submitReview(uint256 _requestId, address _reviewed, uint256 _rating, string memory _comment) public",
+  "function getUser(address _user) public view returns (tuple(string name, string location, uint256 trustScore, uint256 totalHelps, uint256 totalReceived, uint256 credits, bool exists))",
+  "function getUserCredits(address _user) public view returns (uint256)",
+  "function getCreditCost(uint256 _helpType) public view returns (uint256)",
+  "function creditCosts(uint256) public view returns (uint256)",
+  "function CREDIT_REWARD() public view returns (uint256)",
+  "function getRequest(uint256 _requestId) public view returns (tuple(uint256 id, address requester, string title, string description, string location, uint256 timestamp, uint8 status, address helper, uint256 helpType))",
+  "function requestCount() public view returns (uint256)",
+  "function getOpenRequests() public view returns (tuple(uint256 id, address requester, string title, string description, string location, uint256 timestamp, uint8 status, address helper, uint256 helpType)[])",
+  "function getUserRequests(address _user) public view returns (tuple(uint256 id, address requester, string title, string description, string location, uint256 timestamp, uint8 status, address helper, uint256 helpType)[])",
+  "event RequestCreated(uint256 indexed requestId, address indexed requester, string title)",
+  "event RequestMatched(uint256 indexed requestId, address indexed helper)",
+  "event RequestCompleted(uint256 indexed requestId)",
+  "event UserRegistered(address indexed user, string name)"
+];
+
+// 合约地址（每次重新部署后需要更新）
+const CONTRACT_ADDRESS = "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9";
+
+// 本地链配置
+const LOCAL_CHAIN_CONFIG = {
+  chainId: '0x7A69', // 31337 的十六进制
+  chainName: 'Hardhat Local',
+  nativeCurrency: {
+    name: 'Ether',
+    symbol: 'ETH',
+    decimals: 18,
+  },
+  rpcUrls: ['http://127.0.0.1:8545'],
+  blockExplorerUrls: [],
+};
+
+type View = 'home' | 'requests' | 'create' | 'profile' | 'dashboard';
+
+interface User {
+  name: string;
+  location: string;
+  trustScore: number;
+  totalHelps: number;
+  totalReceived: number;
+  credits: number;
+  exists: boolean;
+}
+
+interface Request {
+  id: number;
+  requester: string;
+  title: string;
+  description: string;
+  location: string;
+  timestamp: number;
+  status: number; // 0: Open, 1: Matched, 2: Completed, 3: Cancelled
+  helper: string;
+  helpType: number;
+}
+
+interface Thread {
+  id: number;
+  from: { x: number; y: number };
+  to: { x: number; y: number };
+  delay: number;
+  duration: number;
+}
+
+// SVG 网络节点类型
+interface NetworkNode {
+  id: string;
+  country: string;
+  city: string;
+  x: number; // 0-100 百分比坐标
+  y: number; // 0-100 百分比坐标
+  memberCount: number; // 人数
+}
+
+interface NetworkEdge {
+  from: string; // node id
+  to: string; // node id
+}
+
+// 城市坐标映射（百分比位置）
+const cityPositions: Record<string, { x: number; y: number }> = {
+  // 亚洲
+  "东京": { x: 82, y: 38 },
+  "首尔": { x: 78, y: 36 },
+  "北京": { x: 75, y: 32 },
+  "上海": { x: 77, y: 40 },
+  "香港": { x: 74, y: 48 },
+  "台北": { x: 77, y: 46 },
+  "曼谷": { x: 68, y: 52 },
+  "新加坡": { x: 68, y: 62 },
+  "吉隆坡": { x: 67, y: 60 },
+  "河内": { x: 70, y: 48 },
+  "马尼拉": { x: 77, y: 54 },
+  "雅加达": { x: 70, y: 68 },
+  "大阪": { x: 80, y: 40 },
+  "京都": { x: 79, y: 40 },
+  // 欧洲
+  "巴黎": { x: 48, y: 30 },
+  "伦敦": { x: 46, y: 26 },
+  "柏林": { x: 52, y: 28 },
+  "罗马": { x: 52, y: 36 },
+  "马德里": { x: 44, y: 36 },
+  "阿姆斯特丹": { x: 49, y: 26 },
+  "维也纳": { x: 54, y: 30 },
+  "布拉格": { x: 53, y: 28 },
+  "巴塞罗那": { x: 47, y: 36 },
+  // 北美
+  "纽约": { x: 24, y: 34 },
+  "洛杉矶": { x: 14, y: 40 },
+  "旧金山": { x: 12, y: 38 },
+  "西雅图": { x: 13, y: 30 },
+  "芝加哥": { x: 20, y: 34 },
+  "多伦多": { x: 22, y: 32 },
+  "温哥华": { x: 12, y: 28 },
+  // 大洋洲
+  "悉尼": { x: 86, y: 76 },
+  "墨尔本": { x: 84, y: 78 },
+  "奥克兰": { x: 92, y: 78 },
+  // 南美
+  "圣保罗": { x: 30, y: 72 },
+  "布宜诺斯艾利斯": { x: 28, y: 78 },
+  "里约热内卢": { x: 32, y: 70 },
+  // 非洲
+  "开普敦": { x: 52, y: 80 },
+  "开罗": { x: 56, y: 42 },
+  // 中东
+  "迪拜": { x: 62, y: 48 },
+  "伊斯坦布尔": { x: 56, y: 36 },
+};
+
+// 默认热点城市位置
+const defaultHotspots = [
+  { x: 68, y: 52, label: "曼谷" },
+  { x: 86, y: 36, label: "首尔" },
+  { x: 77, y: 46, label: "台北" },
+  { x: 38, y: 34, label: "纽约" },
+  { x: 92, y: 76, label: "悉尼" },
+];
+
+// 生成100-500之间的随机人数
+function getRandomMemberCount(): number {
+  return Math.floor(Math.random() * 401) + 100; // 100-500
+}
+
+// SVG 网络节点示例数据
+const networkNodes: NetworkNode[] = [
+  { id: 'cn', country: '中国', city: '北京', x: 75, y: 32, memberCount: getRandomMemberCount() },
+  { id: 'jp', country: '日本', city: '东京', x: 82, y: 38, memberCount: getRandomMemberCount() },
+  { id: 'kr', country: '韩国', city: '首尔', x: 78, y: 36, memberCount: getRandomMemberCount() },
+  { id: 'tw', country: '台湾', city: '俄罗斯', x: 77, y: 46, memberCount: getRandomMemberCount() },
+  { id: 'th', country: '泰国', city: '曼谷', x: 68, y: 52, memberCount: getRandomMemberCount() },
+  { id: 'sg', country: '新加坡', city: '新加坡', x: 68, y: 62, memberCount: getRandomMemberCount() },
+  { id: 'us', country: '美国', city: '纽约', x: 24, y: 34, memberCount: getRandomMemberCount() },
+  { id: 'us2', country: '美国', city: '洛杉矶', x: 14, y: 40, memberCount: getRandomMemberCount() },
+  { id: 'uk', country: '英国', city: '伦敦', x: 46, y: 26, memberCount: getRandomMemberCount() },
+  { id: 'fr', country: '法国', city: '巴黎', x: 48, y: 30, memberCount: getRandomMemberCount() },
+  { id: 'de', country: '德国', city: '柏林', x: 52, y: 28, memberCount: getRandomMemberCount() },
+  { id: 'it', country: '意大利', city: '罗马', x: 52, y: 36, memberCount: getRandomMemberCount() },
+  { id: 'au', country: '澳大利亚', city: '悉尼', x: 92, y: 76, memberCount: getRandomMemberCount() },
+  { id: 'ae', country: '阿联酋', city: '迪拜', x: 62, y: 48, memberCount: getRandomMemberCount() },
+  { id: 'ca', country: '加拿大', city: '多伦多', x: 22, y: 32, memberCount: getRandomMemberCount() },
+];
+
+// 生成网络连接线（简化：每个节点连接到最近的2-3个节点，避免全连接）
+function generateEdges(nodes: NetworkNode[]): NetworkEdge[] {
+  const edges: NetworkEdge[] = [];
+  const maxConnections = 3;
+  
+  for (let i = 0; i < nodes.length; i++) {
+    const distances: Array<{ index: number; distance: number }> = [];
+    for (let j = 0; j < nodes.length; j++) {
+      if (i !== j) {
+        const dx = nodes[i].x - nodes[j].x;
+        const dy = nodes[i].y - nodes[j].y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        distances.push({ index: j, distance });
+      }
+    }
+    // 按距离排序，选择最近的几个
+    distances.sort((a, b) => a.distance - b.distance);
+    const connections = distances.slice(0, maxConnections);
+    connections.forEach(conn => {
+      // 避免重复边
+      const edgeExists = edges.some(e => 
+        (e.from === nodes[i].id && e.to === nodes[conn.index].id) ||
+        (e.from === nodes[conn.index].id && e.to === nodes[i].id)
+      );
+      if (!edgeExists) {
+        edges.push({ from: nodes[i].id, to: nodes[conn.index].id });
+      }
+    });
+  }
+  
+  return edges;
+}
+
+const networkEdges = generateEdges(networkNodes);
+
+// 网络层视觉控制
+const LINE_OPACITY = 0.65;               // 连接线默认透明度（0-1）
+const LINE_OPACITY_SELECTED = 0.85;       // 选中时连接线透明度（0-1）
+const NODE_GLOW_INTENSITY = 0.4;         // 节点发光强度（0-1）
+const NODE_GLOW_SELECTED = 0.8;          // 选中节点发光强度（0-1）
+
+export default function Home() {
+  const [account, setAccount] = useState<string | null>(null);
+  const [provider, setProvider] = useState<ethers.BrowserProvider | null>(null);
+  const [contract, setContract] = useState<ethers.Contract | null>(null);
+  const [user, setUser] = useState<User | null>(null);
+  const [requests, setRequests] = useState<Request[]>([]);
+  const [currentView, setCurrentView] = useState<View>('home');
+  const [loading, setLoading] = useState(false);
+  const [contractDeployed, setContractDeployed] = useState<boolean | null>(null);
+  const [threads, setThreads] = useState<Thread[]>([]);
+  const [hoveredCity, setHoveredCity] = useState<string | null>(null);
+  const [showDisconnect, setShowDisconnect] = useState(false);
+  const disconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // SVG 网络图状态
+  const [selectedNode, setSelectedNode] = useState<NetworkNode | null>(null);
+  const [cardPosition, setCardPosition] = useState<{ x: number; y: number } | null>(null);
+  const networkContainerRef = useRef<HTMLDivElement>(null);
+  
+  // 节点拖拽状态
+  const [draggingNode, setDraggingNode] = useState<string | null>(null);
+  const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
+  const [dragOffset, setDragOffset] = useState<{ x: number; y: number } | null>(null);
+  // 从 localStorage 加载保存的节点位置
+  const loadSavedNodePositions = (): NetworkNode[] => {
+    if (typeof window === 'undefined') return networkNodes;
+    
+    try {
+      const saved = localStorage.getItem('herweave_node_positions');
+      if (saved) {
+        const savedPositions: Record<string, { x: number; y: number }> = JSON.parse(saved);
+        return networkNodes.map(node => {
+          const savedPos = savedPositions[node.id];
+          if (savedPos) {
+            return { ...node, x: savedPos.x, y: savedPos.y };
+          }
+          return node;
+        });
+      }
+    } catch (error) {
+      console.warn('Failed to load saved node positions:', error);
+    }
+    return networkNodes;
+  };
+
+  const [nodes, setNodes] = useState<NetworkNode[]>(loadSavedNodePositions()); // 可编辑的节点数组
+  
+  // 保存节点位置到 localStorage
+  const saveNodePositions = (updatedNodes: NetworkNode[]) => {
+    if (typeof window === 'undefined') return;
+    
+    try {
+      const positions: Record<string, { x: number; y: number }> = {};
+      updatedNodes.forEach(node => {
+        positions[node.id] = { x: node.x, y: node.y };
+      });
+      localStorage.setItem('herweave_node_positions', JSON.stringify(positions));
+    } catch (error) {
+      console.warn('Failed to save node positions:', error);
+    }
+  };
+  
+  // 音乐播放状态
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [userPaused, setUserPaused] = useState(false); // 用户是否手动暂停
+  const audioRef = useRef<HTMLAudioElement>(null);
+
+  // 页面加载时，如果已连接钱包，检查合约状态
+  useEffect(() => {
+    if (account && provider) {
+      // 延迟检查，确保网络切换完成
+      const timer = setTimeout(() => {
+        checkContractDeployed(provider);
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [account, provider]);
+
+  // 自动恢复钱包地址显示（1秒后）
+  useEffect(() => {
+    if (showDisconnect) {
+      // 清除之前的定时器
+      if (disconnectTimerRef.current) {
+        clearTimeout(disconnectTimerRef.current);
+      }
+      // 设置1秒后自动恢复
+      disconnectTimerRef.current = setTimeout(() => {
+        setShowDisconnect(false);
+        disconnectTimerRef.current = null;
+      }, 1000);
+    }
+    // 清理函数
+    return () => {
+      if (disconnectTimerRef.current) {
+        clearTimeout(disconnectTimerRef.current);
+        disconnectTimerRef.current = null;
+      }
+    };
+  }, [showDisconnect]);
+
+  // 生成编织线程动画
+  useEffect(() => {
+    const points = defaultHotspots.map(h => ({ x: h.x, y: h.y }));
+    if (points.length < 2) return;
+
+    const newThreads: Thread[] = [];
+    let threadId = 0;
+
+    // 创建编织效果的连接线
+    for (let i = 0; i < points.length; i++) {
+      // 每个点连接到2-3个其他点
+      const connections = Math.min(3, points.length - 1);
+      for (let j = 0; j < connections; j++) {
+        const targetIndex = (i + j + 1) % points.length;
+        if (targetIndex !== i) {
+          newThreads.push({
+            id: threadId++,
+            from: points[i],
+            to: points[targetIndex],
+            delay: Math.random() * 3,
+            duration: 2 + Math.random() * 2
+          });
+        }
+      }
+    }
+
+    setThreads(newThreads);
+  }, []);
+
+  // 处理 ESC 键关闭卡片
+  useEffect(() => {
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && selectedNode) {
+        setSelectedNode(null);
+        setCardPosition(null);
+      }
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [selectedNode]);
+
+  // 连接钱包后自动播放音乐（仅在用户未手动暂停时）
+  useEffect(() => {
+    if (account && audioRef.current && !userPaused) {
+      // 检查当前播放状态，避免重复播放
+      if (audioRef.current.paused) {
+        audioRef.current.play().then(() => {
+          setIsPlaying(true);
+        }).catch((error) => {
+          console.warn('音乐播放失败（可能需要用户交互）:', error);
+        });
+      }
+    } else if (!account && audioRef.current) {
+      // 断开连接时停止音乐
+      audioRef.current.pause();
+      setIsPlaying(false);
+      setUserPaused(false); // 重置用户暂停状态
+    }
+  }, [account, userPaused]);
+
+  // 切换播放/暂停
+  const toggleMusic = () => {
+    if (!audioRef.current) return;
+    
+    if (isPlaying) {
+      // 用户手动暂停
+      audioRef.current.pause();
+      setIsPlaying(false);
+      setUserPaused(true); // 标记为用户手动暂停
+    } else {
+      // 用户手动播放
+      audioRef.current.play().then(() => {
+        setIsPlaying(true);
+        setUserPaused(false); // 清除用户暂停标记
+      }).catch((error) => {
+        console.warn('音乐播放失败:', error);
+      });
+    }
+  };
+
+  // 监听音频播放状态（但不影响用户手动控制）
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const handlePlay = () => {
+      // 只有在不是用户手动暂停的情况下才更新状态
+      if (!userPaused) {
+        setIsPlaying(true);
+      }
+    };
+    const handlePause = () => {
+      // 如果是因为断开连接导致的暂停，不更新 userPaused
+      if (!account) {
+        setIsPlaying(false);
+        setUserPaused(false);
+      } else {
+        setIsPlaying(false);
+      }
+    };
+    const handleEnded = () => setIsPlaying(false);
+
+    audio.addEventListener('play', handlePlay);
+    audio.addEventListener('pause', handlePause);
+    audio.addEventListener('ended', handleEnded);
+
+    return () => {
+      audio.removeEventListener('play', handlePlay);
+      audio.removeEventListener('pause', handlePause);
+      audio.removeEventListener('ended', handleEnded);
+    };
+  }, [account, userPaused]);
+  
+  // 创建请求表单
+  const [reqTitle, setReqTitle] = useState('');
+  const [reqDescription, setReqDescription] = useState('');
+  const [reqLocation, setReqLocation] = useState('');
+  const [reqHelpType, setReqHelpType] = useState(0);
+
+  // 检查合约是否已部署
+  const checkContractDeployed = async (provider: ethers.BrowserProvider) => {
+    try {
+      console.log('🔍 开始检查合约部署状态...');
+      console.log('📍 合约地址:', CONTRACT_ADDRESS);
+      
+      // 检查网络
+      let network;
+      let chainId;
+      try {
+        network = await provider.getNetwork();
+        chainId = Number(network.chainId);
+        console.log('🌐 当前网络:', {
+          chainId: chainId,
+          name: network.name,
+          expectedChainId: [31337, 1337],
+          isCorrectNetwork: chainId === 31337 || chainId === 1337
+        });
+      } catch (networkError: any) {
+        console.error('❌ 获取网络信息失败:', networkError);
+        setContractDeployed(false);
+        return false;
+      }
+      
+      // 验证网络是否正确
+      if (chainId !== 31337 && chainId !== 1337) {
+        console.warn('⚠️ 网络不匹配！当前链 ID:', chainId, '期望:', [31337, 1337]);
+        console.warn('💡 提示：请确保 MetaMask 已切换到本地链');
+        setContractDeployed(false);
+        return false;
+      }
+      
+      // 检查合约代码
+      let code;
+      try {
+        code = await provider.getCode(CONTRACT_ADDRESS);
+      } catch (codeError: any) {
+        console.error('❌ 获取合约代码失败:', codeError);
+        setContractDeployed(false);
+        return false;
+      }
+      
+      const codeLength = code?.length || 0;
+      const isEmpty = !code || code === '0x' || code.length <= 2;
+      
+      console.log('📄 合约代码检查:', {
+        codeLength: codeLength,
+        codePreview: code?.substring(0, 30) + '...',
+        isEmpty: isEmpty,
+        hasCode: codeLength > 2
+      });
+      
+      const deployed = !isEmpty && codeLength > 2;
+      
+      if (deployed) {
+        console.log('✅ 合约已部署！');
+        console.log('📋 合约信息:', {
+          address: CONTRACT_ADDRESS,
+          codeLength: codeLength,
+          network: network.name,
+          chainId: chainId
+        });
+        setContractDeployed(true);
+      } else {
+        console.log('❌ 合约未部署或地址不正确');
+        console.log('🔍 检查详情:', {
+          address: CONTRACT_ADDRESS,
+          codeLength: codeLength,
+          isEmpty: isEmpty,
+          network: network.name,
+          chainId: chainId,
+          expectedChainId: [31337, 1337]
+        });
+        console.warn('💡 请运行: npx hardhat run scripts/deploy.js --network localhost');
+        setContractDeployed(false);
+      }
+      
+      return deployed;
+    } catch (error: any) {
+      console.error('❌ 检查合约部署状态失败:', error);
+      console.error('错误详情:', {
+        message: error.message,
+        code: error.code,
+        data: error.data,
+        stack: error.stack
+      });
+      setContractDeployed(false);
+      return false;
+    }
+  };
+
+  // 切换到本地链
+  const switchToLocalChain = async () => {
+    if (typeof window.ethereum === 'undefined') {
+      throw new Error('MetaMask 未安装');
+    }
+
+    try {
+      // 先检查当前网络
+      const currentChainId = await window.ethereum.request({
+        method: 'eth_chainId',
+      });
+      
+      console.log('🔍 当前链 ID:', currentChainId);
+      
+      // 如果已经是本地链，直接返回
+      if (currentChainId === LOCAL_CHAIN_CONFIG.chainId) {
+        console.log('✅ 已在本地链上');
+        return;
+      }
+
+      // 尝试切换到本地链
+      try {
+        await window.ethereum.request({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: LOCAL_CHAIN_CONFIG.chainId }],
+        });
+        console.log('✅ 已切换到本地链');
+      } catch (switchError: any) {
+        // 如果链不存在，则添加它
+        if (switchError.code === 4902 || switchError.code === -32603) {
+          console.log('📝 本地链不存在，正在添加...');
+          try {
+            await window.ethereum.request({
+              method: 'wallet_addEthereumChain',
+              params: [LOCAL_CHAIN_CONFIG],
+            });
+            console.log('✅ 已添加并切换到本地链');
+          } catch (addError: any) {
+            console.error('❌ 添加本地链失败:', addError);
+            throw new Error('无法添加本地链，请手动在 MetaMask 中添加：\n网络名称: Hardhat Local\nRPC URL: http://127.0.0.1:8545\n链 ID: 31337');
+          }
+        } else if (switchError.code === 4001) {
+          // 用户拒绝了请求
+          console.warn('⚠️ 用户拒绝了网络切换');
+          throw new Error('用户拒绝了网络切换请求');
+        } else {
+          console.error('❌ 切换链失败:', switchError);
+          throw switchError;
+        }
+      }
+    } catch (error: any) {
+      console.error('❌ 网络切换过程出错:', error);
+      throw error;
+    }
+  };
+
+  // 连接钱包
+  const connectWallet = async () => {
+    // 检查 MetaMask 是否已安装
+    if (typeof window.ethereum === 'undefined') {
+      alert('请先安装 MetaMask 浏览器扩展\n\n访问 https://metamask.io 下载安装');
+      return;
+    }
+
+    // 检查是否是 MetaMask
+    if (!window.ethereum.isMetaMask) {
+      alert('请使用 MetaMask 钱包连接');
+      return;
+    }
+
+    setLoading(true);
+    
+    try {
+      console.log('🔗 开始连接 MetaMask 钱包...');
+      console.log('📱 正在请求 MetaMask 账户连接（将弹出连接窗口）...');
+      
+      // 重要：先检查是否已有账户连接
+      // 如果没有连接，eth_requestAccounts 会弹出 MetaMask 连接窗口
+      // 如果已连接，MetaMask 可能不会弹出，但会返回已连接的账户
+      let accounts: string[];
+      
+      try {
+        // 使用 eth_requestAccounts 触发 MetaMask 连接弹窗
+        // 这是标准的 MetaMask 连接方法，会弹出连接确认窗口
+        accounts = await window.ethereum.request({
+          method: 'eth_requestAccounts'
+        }) as string[];
+        
+        console.log('📱 MetaMask 连接请求已发送，等待用户确认...');
+      } catch (requestError: any) {
+        // 如果用户拒绝了连接请求
+        if (requestError.code === 4001 || requestError.message?.includes('user rejected') || requestError.message?.includes('User rejected')) {
+          console.log('❌ 用户取消了连接请求');
+          setLoading(false);
+          return; // 用户取消，直接返回，不执行后续操作
+        }
+        throw requestError; // 其他错误继续抛出
+      }
+      
+      // 检查是否获取到账户
+      if (!accounts || accounts.length === 0) {
+        throw new Error('未获取到账户，请重试');
+      }
+      
+      console.log('✅ MetaMask 账户已连接:', accounts[0]);
+      
+      // 创建 provider 和合约实例
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+      const contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+      
+      setProvider(provider);
+      setContract(contract);
+      setAccount(accounts[0]);
+      
+      // 尝试切换到本地链（如果失败也不影响连接）
+      console.log('🔄 尝试切换到本地链...');
+      try {
+        await switchToLocalChain();
+        // 等待网络切换完成
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      } catch (switchError: any) {
+        console.warn('⚠️ 网络切换失败，继续使用当前网络...', switchError);
+        // 网络切换失败不影响连接，用户可以手动切换
+      }
+      
+      // 连接成功后立即跳转到仪表板页面
+      setCurrentView('dashboard');
+      
+      // 检查合约是否已部署
+      const deployed = await checkContractDeployed(provider);
+      
+      // 无论合约是否部署，都尝试加载数据
+      console.log('📥 开始加载数据...');
+      
+      // 加载用户信息
+      if (deployed) {
+        try {
+          await loadUser(accounts[0], contract);
+          console.log('✅ 用户信息加载完成');
+        } catch (error) {
+          console.warn('⚠️ 加载用户信息失败:', error);
+        }
+      }
+      
+      // 加载请求列表（无论合约是否部署都尝试）
+      try {
+        console.log('📥 开始加载请求列表...');
+        await loadRequests(contract);
+        console.log('✅ 请求列表加载完成');
+      } catch (error) {
+        console.warn('⚠️ 加载请求列表失败:', error);
+        // 即使失败也设置空数组，避免显示错误状态
+        setRequests([]);
+      }
+      
+      if (!deployed) {
+        console.warn('⚠️ 合约未部署，请确保：');
+        console.warn('1. Hardhat 节点正在运行 (npx hardhat node)');
+        console.warn('2. 合约已部署 (npx hardhat run scripts/deploy.js --network localhost)');
+      }
+    } catch (error: any) {
+      console.error('❌ 连接钱包失败:', error);
+      
+      // 更友好的错误提示
+      let errorMessage = '连接钱包失败';
+      
+      if (error.code === 4001) {
+        errorMessage = '您取消了连接请求';
+      } else if (error.code === -32002) {
+        errorMessage = '连接请求已在进行中，请检查 MetaMask 弹窗';
+      } else if (error.message?.includes('user rejected') || error.message?.includes('User rejected')) {
+        errorMessage = '您取消了连接请求';
+      } else if (error.message?.includes('无法添加本地链')) {
+        errorMessage = '无法自动添加本地链，请手动在 MetaMask 中添加：\n网络名称: Hardhat Local\nRPC URL: http://127.0.0.1:8545\n链 ID: 31337';
+      } else {
+        errorMessage = error.message || '连接失败，请确保 MetaMask 已安装并解锁';
+      }
+      
+      alert(errorMessage);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 加载用户信息
+  const loadUser = async (address: string, contractInstance: ethers.Contract) => {
+    try {
+      // 先检查合约是否已部署
+      if (!contractInstance.runner || !provider) {
+        console.warn('合约实例或 provider 无效');
+        return;
+      }
+
+      // 再次确认合约已部署
+      const code = await provider.getCode(CONTRACT_ADDRESS);
+      if (!code || code === '0x') {
+        console.warn('合约未部署，跳过加载用户信息');
+        setContractDeployed(false);
+        return;
+      }
+
+        try {
+          const userData = await contractInstance.getUser(address);
+          
+          // 检查返回的数据是否有效
+          if (userData && userData.exists) {
+            // 处理credits字段（可能是BigNumber）
+            const credits = userData.credits ? Number(userData.credits) : 10;
+            setUser({
+              name: userData.name || '',
+              location: userData.location || '',
+              trustScore: Number(userData.trustScore) || 50,
+              totalHelps: Number(userData.totalHelps) || 0,
+              totalReceived: Number(userData.totalReceived) || 0,
+              credits: credits,
+              exists: true
+            });
+          } else {
+            // 用户未注册，这是正常情况，设置默认值
+            console.log('用户未注册，使用默认值');
+            setUser({
+              name: '',
+              location: '',
+              trustScore: 50,
+              totalHelps: 0,
+              totalReceived: 0,
+              credits: 10,
+              exists: false
+            });
+          }
+      } catch (callError: any) {
+        // 处理合约调用错误
+        if (callError.code === 'BAD_DATA' || callError.message?.includes('could not decode')) {
+          console.warn('合约调用失败，可能是合约未部署或 ABI 不匹配');
+          setContractDeployed(false);
+        } else {
+          console.error('调用 getUser 失败:', callError);
+          setUser(null);
+        }
+      }
+    } catch (error: any) {
+      console.error('加载用户信息失败:', error);
+      setUser(null);
+    }
+  };
+
+  // 加载请求列表
+  const loadRequests = async (contractInstance: ethers.Contract) => {
+    try {
+      console.log('🔍 loadRequests 开始执行...');
+      console.log('📋 合约实例:', contractInstance);
+      console.log('📋 Provider:', provider);
+      
+      // 先检查合约实例和 provider
+      if (!contractInstance || !contractInstance.runner || !provider) {
+        console.warn('⚠️ 合约实例或 provider 无效');
+        setRequests([]);
+        return;
+      }
+
+      // 检查合约是否已部署
+      let code;
+      try {
+        code = await provider.getCode(CONTRACT_ADDRESS);
+        console.log('📄 合约代码检查:', code ? `有代码 (${code.length} 字符)` : '无代码');
+      } catch (codeError: any) {
+        console.warn('⚠️ 获取合约代码失败:', codeError);
+        setContractDeployed(false);
+        setRequests([]);
+        return;
+      }
+      
+      if (!code || code === '0x') {
+        console.warn('⚠️ 合约未部署，跳过加载请求');
+        setContractDeployed(false);
+        setRequests([]);
+        return;
+      }
+
+      console.log('✅ 合约已部署，开始获取请求...');
+      setContractDeployed(true);
+
+      try {
+        // 先检查请求总数
+        console.log('📊 正在获取请求总数...');
+        const totalCount = await contractInstance.requestCount();
+        const count = Number(totalCount);
+        console.log('📊 当前请求总数:', count);
+        
+        if (count === 0) {
+          console.log('ℹ️ 当前没有请求');
+          setRequests([]);
+          return;
+        }
+
+        // 获取所有开放的请求
+        console.log('📥 正在调用 getOpenRequests()...');
+        const openRequests = await contractInstance.getOpenRequests();
+        console.log('📥 getOpenRequests() 返回:', openRequests);
+        console.log('📥 数据类型:', typeof openRequests, '是否为数组:', Array.isArray(openRequests));
+        console.log('📥 数组长度:', Array.isArray(openRequests) ? openRequests.length : 'N/A');
+        
+        // 处理空数组或无效数据
+        if (!openRequests || !Array.isArray(openRequests) || openRequests.length === 0) {
+          console.log('ℹ️ 当前没有开放的请求');
+          setRequests([]);
+          return;
+        }
+
+        // 转换并过滤请求（只显示状态为 Open 的请求）
+        console.log('🔄 开始处理请求数据...');
+        const validRequests = openRequests
+          .map((r: any, index: number) => {
+            const request = {
+              id: Number(r.id),
+              requester: r.requester,
+              title: r.title,
+              description: r.description,
+              location: r.location,
+              timestamp: Number(r.timestamp),
+              status: Number(r.status),
+              helper: r.helper,
+              helpType: Number(r.helpType)
+            };
+            console.log(`📋 请求 ${index + 1}:`, request);
+            return request;
+          })
+          .filter((r: Request) => {
+            const isOpen = r.status === 0; // 0 = Open
+            if (!isOpen) {
+              console.log(`⏭️ 跳过请求 ${r.id}，状态: ${r.status} (非开放)`);
+            }
+            return isOpen;
+          });
+
+        console.log('✅ 成功加载请求:', validRequests.length, '个开放请求');
+        console.log('📋 最终请求列表:', validRequests);
+        setRequests(validRequests);
+      } catch (callError: any) {
+        // 处理合约调用错误
+        console.error('❌ 调用合约方法失败:', callError);
+        console.error('❌ 错误代码:', callError.code);
+        console.error('❌ 错误消息:', callError.message);
+        console.error('❌ 错误堆栈:', callError.stack);
+        
+        if (callError.code === 'BAD_DATA' || callError.message?.includes('could not decode')) {
+          console.warn('⚠️ 合约调用失败，可能是合约未部署或 ABI 不匹配');
+          setContractDeployed(false);
+          setRequests([]);
+        } else {
+          console.error('❌ 调用 getOpenRequests 失败:', callError);
+          setRequests([]);
+        }
+      }
+    } catch (error: any) {
+      console.error('❌ 加载请求失败:', error);
+      console.error('❌ 错误详情:', error.message, error.stack);
+      setRequests([]);
+    }
+  };
+
+  // 创建请求
+  const createRequest = async () => {
+    if (!contract || !reqTitle || !reqDescription || !reqLocation) {
+      alert('请填写完整信息');
+      return;
+    }
+    setLoading(true);
+    try {
+      const tx = await contract.createRequest(reqTitle, reqDescription, reqLocation, reqHelpType);
+      await tx.wait();
+      setReqTitle('');
+      setReqDescription('');
+      setReqLocation('');
+      setReqHelpType(0);
+      await loadRequests(contract);
+      setCurrentView('dashboard');
+    } catch (error: any) {
+      console.error('发布失败:', error);
+      alert('发布失败: ' + (error.message || '未知错误'));
+    }
+    setLoading(false);
+  };
+
+  // 接受请求
+  const acceptRequest = async (requestId: number) => {
+    if (!contract) return;
+    setLoading(true);
+    try {
+      const tx = await contract.acceptRequest(requestId);
+      await tx.wait();
+      // 重新加载用户信息以更新Credits
+      if (account) {
+        await loadUser(account, contract);
+      }
+      await loadRequests(contract);
+      alert(`已接受请求！获得 ${creditReward} Credits 奖励`);
+    } catch (error: any) {
+      console.error('接受请求失败:', error);
+      alert('接受失败: ' + (error.message || '未知错误'));
+    }
+    setLoading(false);
+  };
+
+  const helpTypes = ['机场/车站接送', '一日游导览', '沙发客住宿'];
+  const creditCosts = [2, 5, 3]; // 对应helpTypes的Credits消耗
+  const creditReward = 1; // 接受任务获得的Credits
+
+  return (
+    <div className="min-h-screen" style={{ background: '#F5F1E8' }}>
+      {/* 导航栏 */}
+      <nav className="bg-white/90 backdrop-blur-md border-b sticky top-0 z-50" style={{ borderColor: '#E8D5D5' }}>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex justify-between items-center h-16">
+            <div className="flex items-center space-x-2">
+              <h1 className="text-xl brand-herweave">
+                <span className="brand-text-dark">Her</span>
+                <span className="brand-terracotta">Weave</span>
+          </h1>
+            </div>
+            
+            <div className="flex items-center space-x-4">
+              {!account ? (
+                // 未连接钱包时：只在首页显示"连接钱包"按钮
+                currentView === 'home' ? (
+                  <button
+                    onClick={connectWallet}
+                    className="btn-primary"
+                    style={{ padding: '10px 24px', fontSize: '16px', minWidth: '120px', textAlign: 'center' }}
+                  >
+                    连接钱包
+                  </button>
+                ) : null
+              ) : currentView === 'home' ? (
+                // 已连接钱包 + 首页：显示钱包地址，点击切换为断开连接
+                showDisconnect ? (
+                  <button
+                    onClick={() => {
+                      // 清除定时器
+                      if (disconnectTimerRef.current) {
+                        clearTimeout(disconnectTimerRef.current);
+                        disconnectTimerRef.current = null;
+                      }
+                      // 执行断开连接
+                      setAccount(null);
+                      setProvider(null);
+                      setContract(null);
+                      setUser(null);
+                      setRequests([]);
+                      setCurrentView('home');
+                      setContractDeployed(null);
+                      setShowDisconnect(false);
+                    }}
+                    className="px-3 py-1 rounded-full text-sm font-medium transition-colors hover:opacity-80 cursor-pointer"
+                    style={{ background: '#E8D5D5', color: '#A05A48', minWidth: '120px', textAlign: 'center' }}
+                  >
+                    断开连接
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => {
+                      // 清除之前的定时器（如果有）
+                      if (disconnectTimerRef.current) {
+                        clearTimeout(disconnectTimerRef.current);
+                        disconnectTimerRef.current = null;
+                      }
+                      setShowDisconnect(true);
+                    }}
+                    className="px-3 py-1 rounded-full text-sm cursor-pointer transition-colors hover:opacity-80"
+                    style={{ background: '#E8D5D5', color: '#A05A48', minWidth: '120px', textAlign: 'center' }}
+                  >
+                    {account.slice(0, 6)}...{account.slice(-4)}
+                  </button>
+                )
+              ) : (
+                // 已连接钱包 + 非首页：显示完整导航栏（互助请求、发布请求、个人中心、钱包地址）
+                <>
+                  <button
+                    onClick={() => {
+                      setCurrentView('dashboard');
+                      if (contract) {
+                        if (account) loadUser(account, contract);
+                        loadRequests(contract);
+                      }
+                    }}
+                    className={`px-4 py-2 rounded-full transition-colors text-sm font-medium ${
+                      currentView === 'dashboard' 
+                        ? 'text-white' 
+                        : 'hover:bg-opacity-10'
+                    }`}
+                    style={currentView === 'dashboard' ? { backgroundColor: '#C4715E' } : { color: '#5A5A5A' }}
+                  >
+                    互助广场
+                  </button>
+                  <button
+                    onClick={() => setCurrentView('create')}
+                    className={`px-4 py-2 rounded-full transition-colors text-sm font-medium ${
+                      currentView === 'create' 
+                        ? 'text-white' 
+                        : 'hover:bg-opacity-10'
+                    }`}
+                    style={currentView === 'create' ? { backgroundColor: '#C4715E' } : { color: '#5A5A5A' }}
+                  >
+                    发布请求
+                  </button>
+                  <button
+                    onClick={() => {
+                      setCurrentView('profile');
+                      if (contract && account) loadUser(account, contract);
+                    }}
+                    className={`px-4 py-2 rounded-full transition-colors text-sm font-medium ${
+                      currentView === 'profile' 
+                        ? 'text-white' 
+                        : 'hover:bg-opacity-10'
+                    }`}
+                    style={currentView === 'profile' ? { backgroundColor: '#C4715E' } : { color: '#5A5A5A' }}
+                  >
+                    个人中心
+                  </button>
+                  {showDisconnect ? (
+                    <button
+                      onClick={() => {
+                        // 清除定时器
+                        if (disconnectTimerRef.current) {
+                          clearTimeout(disconnectTimerRef.current);
+                          disconnectTimerRef.current = null;
+                        }
+                        // 执行断开连接
+                        setAccount(null);
+                        setProvider(null);
+                        setContract(null);
+                        setUser(null);
+                        setRequests([]);
+                        setCurrentView('home');
+                        setContractDeployed(null);
+                        setShowDisconnect(false);
+                      }}
+                      className="px-3 py-1 rounded-full text-sm font-medium transition-colors hover:opacity-80 cursor-pointer"
+                      style={{ background: '#E8D5D5', color: '#A05A48', minWidth: '120px', textAlign: 'center' }}
+                    >
+                      断开连接
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        // 清除之前的定时器（如果有）
+                        if (disconnectTimerRef.current) {
+                          clearTimeout(disconnectTimerRef.current);
+                          disconnectTimerRef.current = null;
+                        }
+                        setShowDisconnect(true);
+                      }}
+                      className="px-3 py-1 rounded-full text-sm cursor-pointer transition-colors hover:opacity-80"
+                      style={{ background: '#E8D5D5', color: '#A05A48', minWidth: '120px', textAlign: 'center' }}
+                    >
+                      {account.slice(0, 6)}...{account.slice(-4)}
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      </nav>
+
+      {/* 主内容区 */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8" style={{ paddingTop: currentView === 'home' ? '0' : '2rem', paddingBottom: '2rem' }}>
+        {/* 合约未部署提示 */}
+        {account && contractDeployed === false && (
+          <div className="mb-6 card" style={{ borderLeft: '4px solid #D4A5A5', background: '#FFFFFF' }}>
+            <div className="flex items-center">
+              <div className="flex-shrink-0">
+                <span className="text-2xl">⚠️</span>
+              </div>
+              <div className="ml-3">
+                <h3 className="text-h3 mb-2" style={{ color: '#A05A48' }}>
+                  智能合约未部署或网络不匹配
+                </h3>
+                <div className="mt-2 text-body">
+                  <p style={{ color: '#5A5A5A' }}>请确保：</p>
+                  <ol className="list-decimal list-inside mt-1 space-y-1 text-body" style={{ color: '#5A5A5A' }}>
+                    <li>MetaMask 已连接到 <code className="px-1 rounded" style={{ background: '#E8D5D5', color: '#A05A48' }}>localhost:8545</code> 网络</li>
+                    <li>已运行 <code className="px-1 rounded" style={{ background: '#E8D5D5', color: '#A05A48' }}>npx hardhat node</code> 启动本地测试网络</li>
+                    <li>已运行 <code className="px-1 rounded" style={{ background: '#E8D5D5', color: '#A05A48' }}>npx hardhat run scripts/deploy.js --network localhost</code> 部署合约</li>
+                    <li>合约地址 <code className="px-1 rounded" style={{ background: '#E8D5D5', color: '#A05A48' }}>{CONTRACT_ADDRESS}</code> 正确</li>
+                  </ol>
+                  <p className="mt-2 text-body" style={{ color: '#5A5A5A' }}>💡 提示：如果已部署，请检查浏览器控制台的日志信息。</p>
+                  <button
+                    onClick={async () => {
+                      if (provider) {
+                        await checkContractDeployed(provider);
+                        if (contract && account) {
+                          await loadUser(account, contract);
+                          await loadRequests(contract);
+                        }
+                      }
+                    }}
+                    className="mt-3 btn-secondary text-sm"
+                    style={{ padding: '8px 20px' }}
+                  >
+                    重新检查合约状态
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+        
+        {(!account || (account && currentView === 'home')) ? (
+          // 未连接钱包或点击首页 - 显示欢迎页面
+          <div className="relative w-full" style={{ background: '#F5F1E8' }}>
+            {/* 第一页 - 主页内容 */}
+            <div className="relative min-h-screen flex items-start justify-center px-6 md:px-12 lg:px-20 overflow-hidden pt-24">
+            {/* 背景装饰 - 渐变光晕 */}
+            <div 
+              className="absolute top-0 right-0 w-96 h-96 rounded-full opacity-20 blur-3xl"
+              style={{ 
+                background: 'radial-gradient(circle, rgba(196, 113, 94, 0.4) 0%, transparent 70%)',
+                transform: 'translate(30%, -30%)'
+              }}
+            ></div>
+            <div 
+              className="absolute bottom-0 left-0 w-80 h-80 rounded-full opacity-15 blur-3xl"
+              style={{ 
+                background: 'radial-gradient(circle, rgba(212, 165, 165, 0.3) 0%, transparent 70%)',
+                transform: 'translate(-30%, 30%)'
+              }}
+            ></div>
+
+            {/* 世界地图和热点城市 */}
+            <div className="absolute inset-0 w-full h-full opacity-30" style={{ pointerEvents: 'none' }}>
+              <svg
+                viewBox="0 0 100 100"
+                className="w-full h-full"
+                preserveAspectRatio="xMidYMid slice"
+              >
+                <defs>
+                  {/* 发光效果 */}
+                  <filter id="cityGlow" x="-50%" y="-50%" width="200%" height="200%">
+                    <feGaussianBlur stdDeviation="0.5" result="coloredBlur" />
+                    <feMerge>
+                      <feMergeNode in="coloredBlur" />
+                      <feMergeNode in="SourceGraphic" />
+                    </feMerge>
+                  </filter>
+
+                  {/* 柔和发光 */}
+                  <filter id="softCityGlow" x="-100%" y="-100%" width="300%" height="300%">
+                    <feGaussianBlur stdDeviation="1.5" result="blur" />
+                    <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                  </filter>
+
+                  {/* 脉冲渐变 - 更柔和的灰粉色 */}
+                  <radialGradient id="pulseGradient">
+                    <stop offset="0%" stopColor="#D4A5A5" stopOpacity="0.3" />
+                    <stop offset="50%" stopColor="#D4A5A5" stopOpacity="0.15" />
+                    <stop offset="100%" stopColor="#D4A5A5" stopOpacity="0" />
+                  </radialGradient>
+
+                  {/* 线条渐变 */}
+                  <linearGradient id="threadGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" stopColor="#D4A5A5" stopOpacity="0" />
+                    <stop offset="50%" stopColor="#D4A5A5" stopOpacity="0.4" />
+                    <stop offset="100%" stopColor="#D4A5A5" stopOpacity="0" />
+                  </linearGradient>
+                </defs>
+
+
+                {/* 编织线程 - 动态连接 */}
+                <g className="weave-threads">
+                  {threads.map((thread) => (
+                    <g key={thread.id}>
+                      {/* 主线条 */}
+                      <line
+                        x1={thread.from.x}
+                        y1={thread.from.y}
+                        x2={thread.to.x}
+                        y2={thread.to.y}
+                        stroke="url(#threadGradient)"
+                        strokeWidth="0.15"
+                        className="thread-line"
+                        style={{
+                          animation: `threadPulse ${thread.duration}s ease-in-out infinite`,
+                          animationDelay: `${thread.delay}s`,
+                        }}
+                      />
+                    </g>
+                  ))}
+                </g>
+
+                {/* 城市热点 */}
+                <g className="city-hotspots">
+                  {defaultHotspots.map((city, index) => {
+                    const size = 1.2;
+                    const isHovered = hoveredCity === city.label;
+                    
+                    return (
+                      <g 
+                        key={city.label}
+                        className="city-point cursor-pointer"
+                        onMouseEnter={() => setHoveredCity(city.label)}
+                        onMouseLeave={() => setHoveredCity(null)}
+                        style={{ pointerEvents: 'auto' }}
+                      >
+                        {/* 外圈脉冲 - 更柔和 */}
+                        <circle
+                          cx={city.x}
+                          cy={city.y}
+                          r={size * 2.5}
+                          fill="none"
+                          stroke="#D4A5A5"
+                          strokeWidth="0.3"
+                          opacity="0.4"
+                          className="pulse-ring"
+                          style={{
+                            animation: `pulse 3s ease-out infinite`,
+                            animationDelay: `${index * 0.4}s`,
+                            transformOrigin: `${city.x}px ${city.y}px`
+                          }}
+                        />
+                        
+                        {/* 柔和光晕 */}
+                        <circle
+                          cx={city.x}
+                          cy={city.y}
+                          r={size * 1.8}
+                          fill="#D4A5A5"
+                          opacity="0.15"
+                          filter="url(#softCityGlow)"
+                        />
+                        
+                        {/* 中间层 - 灰粉色 */}
+                        <circle
+                          cx={city.x}
+                          cy={city.y}
+                          r={size * 0.8}
+                          fill="#D4A5A5"
+                          opacity="0.4"
+                        />
+                        
+                        {/* 核心点 - 更小更精致 */}
+                        <circle
+                          cx={city.x}
+                          cy={city.y}
+                          r={isHovered ? size * 0.4 : size * 0.25}
+                          fill="#C4715E"
+                          opacity="0.6"
+                          filter="url(#cityGlow)"
+                          className="transition-all duration-300"
+                        />
+                      </g>
+                    );
+                  })}
+                </g>
+              </svg>
+
+              {/* Hover 城市标签 */}
+              {hoveredCity && (
+                <div 
+                  className="absolute pointer-events-none z-20 px-3 py-2 rounded-full backdrop-blur-sm border shadow-lg"
+                  style={{
+                    left: `${(defaultHotspots.find(c => c.label === hoveredCity)?.x || 50)}%`,
+                    top: `${(defaultHotspots.find(c => c.label === hoveredCity)?.y || 50) - 8}%`,
+                    transform: 'translate(-50%, -100%)',
+                    background: 'rgba(255, 255, 255, 0.9)',
+                    borderColor: '#D4A5A5',
+                    color: '#2C2C2C',
+                    pointerEvents: 'none'
+                  }}
+                >
+                  <span className="text-sm font-medium">{hoveredCity}</span>
+                </div>
+              )}
+
+              {/* CSS 动画 */}
+              <style>{`
+                @keyframes pulse {
+                  0% {
+                    transform: scale(0.8);
+                    opacity: 0.8;
+                  }
+                  50% {
+                    transform: scale(1.2);
+                    opacity: 0.4;
+                  }
+                  100% {
+                    transform: scale(1.5);
+                    opacity: 0;
+                  }
+                }
+                
+                @keyframes threadPulse {
+                  0%, 100% {
+                    opacity: 0.15;
+                  }
+                  50% {
+                    opacity: 0.4;
+                  }
+                }
+                
+                .thread-line {
+                  stroke-dasharray: 2 2;
+                  animation: dash 20s linear infinite;
+                }
+                
+                @keyframes dash {
+                  to {
+                    stroke-dashoffset: -100;
+                  }
+                }
+              `}</style>
+            </div>
+
+            <div className="relative z-10 w-full max-w-7xl mx-auto grid lg:grid-cols-2 gap-12 lg:gap-16 items-center">
+              {/* 左侧 - Logo区域 */}
+              <div className="flex flex-col items-center lg:items-start">
+                <div 
+                  className="mb-6 lg:mb-8 p-6 rounded-2xl"
+                  style={{ 
+                    background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.8) 0%, rgba(255, 255, 255, 0.5) 100%)',
+                    backdropFilter: 'blur(10px)',
+                    border: '2px solid rgba(196, 113, 94, 0.3)',
+                    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.08), 0 4px 12px rgba(196, 113, 94, 0.15)'
+                  }}
+                >
+                  <img 
+                    src="/HerWeave.png" 
+                    alt="HerWeave Logo" 
+                    style={{ 
+                      width: '380px',
+                      height: 'auto',
+                      maxWidth: '100%',
+                      display: 'block'
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* 右侧 - 内容区域 */}
+              <div className="flex flex-col space-y-6 lg:space-y-8">
+                {/* 品牌名称 */}
+                <h1 
+                  className="text-5xl md:text-6xl lg:text-7xl font-medium leading-tight"
+                  style={{ 
+                    letterSpacing: '-0.03em',
+                    background: 'linear-gradient(135deg, #C4715E 0%, #A05A48 100%)',
+                    WebkitBackgroundClip: 'text',
+                    WebkitTextFillColor: 'transparent',
+                    backgroundClip: 'text'
+                  }}
+                >
+                  HerWeave
+          </h1>
+
+                {/* 主标语 */}
+                <div className="space-y-3">
+                  <p 
+                    className="text-2xl md:text-3xl lg:text-4xl font-semibold leading-tight"
+                    style={{ 
+                      letterSpacing: '0.02em'
+                    }}
+                  >
+                    <span
+                      style={{
+                        background: 'linear-gradient(135deg, #E53E3E 0%, #C4715E 50%, #A05A48 100%)',
+                        WebkitBackgroundClip: 'text',
+                        WebkitTextFillColor: 'transparent',
+                        backgroundClip: 'text',
+                        fontWeight: '600'
+                      }}
+                    >
+                      Her Weave
+                    </span>
+                    <span style={{ color: '#8A8A8A', margin: '0 8px', fontWeight: '300' }}>,</span>
+                    <span
+                      style={{
+                        background: 'linear-gradient(135deg, #A05A48 0%, #8B4A3A 100%)',
+                        WebkitBackgroundClip: 'text',
+                        WebkitTextFillColor: 'transparent',
+                        backgroundClip: 'text',
+                        fontWeight: '500'
+                      }}
+                    >
+                      Your World
+                    </span>
+          </p>
+        </div>
+
+                {/* 描述文字 */}
+                <p 
+                  className="text-base md:text-lg leading-relaxed max-w-lg"
+                  style={{ color: '#8A8A8A' }}
+                >
+                  基于 Web3 信任机制的女性旅行互助网络，让女性在跨国旅行中可以彼此支持、互相交换帮助，缓解独自旅行时的信息差与安全信任问题。
+                </p>
+
+                {/* 主要按钮 - 静态文本 */}
+                {!account ? (
+                  <div className="pt-2">
+                    <div
+                      className="text-base px-8 py-3.5"
+                      style={{ 
+                        fontSize: '16px',
+                        padding: '14px 40px',
+                        color: '#A05A48',
+                        fontWeight: '500',
+                        pointerEvents: 'none',
+                        userSelect: 'none'
+                      }}
+                    >
+                      开始你的旅程
+                    </div>
+                  </div>
+                ) : (
+                  <div className="pt-2 flex gap-4 flex-wrap">
+                    <button
+                      onClick={() => {
+                        setCurrentView('requests');
+                        if (contract) loadRequests(contract);
+                      }}
+                      className="btn-primary text-base px-8 py-3.5"
+                      style={{ 
+                        fontSize: '16px',
+                        padding: '14px 40px',
+                        boxShadow: '0 6px 20px rgba(196, 113, 94, 0.4)'
+                      }}
+                    >
+                      查看请求
+                    </button>
+                    <button
+                      onClick={() => setCurrentView('create')}
+                      className="btn-secondary text-base px-8 py-3.5"
+                      style={{ 
+                        fontSize: '16px',
+                        padding: '14px 40px'
+                      }}
+                    >
+                      发布请求
+                    </button>
+                  </div>
+                )}
+
+                {/* 服务选项 - 横向排列 */}
+                <div className="grid grid-cols-3 gap-4 pt-4">
+                  <div 
+                    className="flex flex-row items-center gap-2 p-3 rounded-lg transition-all duration-300 cursor-pointer"
+                    style={{ 
+                      background: 'rgba(255, 255, 255, 0.3)',
+                      border: '1px solid rgba(212, 165, 165, 0.2)'
+                    }}
+                  >
+                    <div className="text-2xl">
+                      🛏️
+                    </div>
+                    <p 
+                      className="text-sm font-normal"
+                      style={{ color: '#5A5A5A' }}
+                    >
+                      借住一晚
+                    </p>
+                  </div>
+                  <div 
+                    className="flex flex-row items-center gap-2 p-3 rounded-lg transition-all duration-300 cursor-pointer"
+                    style={{ 
+                      background: 'rgba(255, 255, 255, 0.3)',
+                      border: '1px solid rgba(212, 165, 165, 0.2)'
+                    }}
+                  >
+                    <div className="text-2xl">
+                      🏛️
+                    </div>
+                    <p 
+                      className="text-sm font-normal"
+                      style={{ color: '#5A5A5A' }}
+                    >
+                      一起探索
+                    </p>
+                  </div>
+                  <div 
+                    className="flex flex-row items-center gap-2 p-3 rounded-lg transition-all duration-300 cursor-pointer"
+                    style={{ 
+                      background: 'rgba(255, 255, 255, 0.3)',
+                      border: '1px solid rgba(212, 165, 165, 0.2)'
+                    }}
+                  >
+                    <div className="text-2xl">
+                      🚗
+                    </div>
+                    <p 
+                      className="text-sm font-normal"
+                      style={{ color: '#5A5A5A' }}
+                    >
+                      接送一程
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+            </div>
+          </div>
+        ) : currentView === 'dashboard' ? (
+          // 已连接 - 互助广场页面
+          <div>
+            {/* 标题和描述 */}
+            <div className="mb-6">
+              <h2 
+                className="text-3xl md:text-4xl font-bold text-center mb-4"
+                style={{ color: '#A05A48' }}
+              >
+                你需要什么帮助？你可以帮助谁？
+              </h2>
+              <p 
+                className="text-base md:text-lg text-center max-w-2xl mx-auto leading-relaxed"
+                style={{ color: '#5A5A5A' }}
+              >
+                发出你的需求,等待附近的姐妹接下任务。每一次帮助,都是网络中新的一根线。
+              </p>
+            </div>
+
+            {/* SVG 世界节点网络图 */}
+            <div className="mb-12" style={{ marginTop: '-2rem' }}>
+              <div 
+                ref={networkContainerRef}
+                className="relative w-full rounded-2xl overflow-hidden"
+                style={{ 
+                  background: 'transparent',
+                  border: 'none',
+                  minHeight: '500px',
+                  height: '60vh',
+                  maxHeight: '800px'
+                }}
+                onClick={(e) => {
+                  // 点击空白处关闭卡片
+                  if (e.target === e.currentTarget || (e.target as HTMLElement).tagName === 'svg') {
+                    setSelectedNode(null);
+                    setCardPosition(null);
+                  }
+                }}
+              >
+                <svg
+                  viewBox="0 0 1000 500"
+                  className="w-full h-full"
+                  preserveAspectRatio="xMidYMid meet"
+                  style={{ cursor: 'default' }}
+                >
+                  {/* 地图背景图片 - 最底层 */}
+                  <image
+                    href="/map.png"
+                    x="0"
+                    y="0"
+                    width="1000"
+                    height="500"
+                    preserveAspectRatio="xMidYMid meet"
+                    opacity="0.6"
+                    style={{ pointerEvents: 'none' }}
+                  />
+
+                  <defs>
+                    {/* 节点发光效果 */}
+                    <filter id="nodeGlow" x="-50%" y="-50%" width="200%" height="200%">
+                      <feGaussianBlur stdDeviation="0.3" result="coloredBlur" />
+                      <feMerge>
+                        <feMergeNode in="coloredBlur" />
+                        <feMergeNode in="SourceGraphic" />
+                      </feMerge>
+                    </filter>
+                    {/* 选中节点高亮 */}
+                    <filter id="nodeGlowSelected" x="-100%" y="-100%" width="300%" height="300%">
+                      <feGaussianBlur stdDeviation="0.8" result="coloredBlur" />
+                      <feMerge>
+                        <feMergeNode in="coloredBlur" />
+                        <feMergeNode in="SourceGraphic" />
+                      </feMerge>
+                    </filter>
+                    {/* 城市发光效果（用于节点动态效果） */}
+                    <filter id="cityGlow" x="-50%" y="-50%" width="200%" height="200%">
+                      <feGaussianBlur stdDeviation="0.5" result="coloredBlur" />
+                      <feMerge>
+                        <feMergeNode in="coloredBlur" />
+                        <feMergeNode in="SourceGraphic" />
+                      </feMerge>
+                    </filter>
+                    {/* 柔和发光 */}
+                    <filter id="softCityGlow" x="-100%" y="-100%" width="300%" height="300%">
+                      <feGaussianBlur stdDeviation="1.5" result="blur" />
+                      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                    </filter>
+                    {/* 脉冲渐变 */}
+                    <radialGradient id="pulseGradient">
+                      <stop offset="0%" stopColor="#D4A5A5" stopOpacity="0.3" />
+                      <stop offset="50%" stopColor="#D4A5A5" stopOpacity="0.15" />
+                      <stop offset="100%" stopColor="#D4A5A5" stopOpacity="0" />
+                    </radialGradient>
+                    {/* 连接线渐变 */}
+                    <linearGradient id="edgeGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                      <stop offset="0%" stopColor="#E53E3E" stopOpacity={LINE_OPACITY * 0.9} />
+                      <stop offset="50%" stopColor="#E53E3E" stopOpacity={LINE_OPACITY} />
+                      <stop offset="100%" stopColor="#E53E3E" stopOpacity={LINE_OPACITY * 0.9} />
+                    </linearGradient>
+                  </defs>
+
+                  {/* 连接线 */}
+                  <g className="network-edges">
+                    {networkEdges.map((edge, idx) => {
+                      const fromNode = nodes.find(n => n.id === edge.from);
+                      const toNode = nodes.find(n => n.id === edge.to);
+                      if (!fromNode || !toNode) return null;
+                      
+                      // 将百分比坐标转换为 viewBox 坐标 (0-100 -> 0-1000, 0-500)
+                      const fromX = (fromNode.x / 100) * 1000;
+                      const fromY = (fromNode.y / 100) * 500;
+                      const toX = (toNode.x / 100) * 1000;
+                      const toY = (toNode.y / 100) * 500;
+                      
+                      const isSelected = selectedNode && (selectedNode.id === fromNode.id || selectedNode.id === toNode.id);
+                      
+                      return (
+                        <line
+                          key={`${edge.from}-${edge.to}-${idx}`}
+                          x1={fromX}
+                          y1={fromY}
+                          x2={toX}
+                          y2={toY}
+                          stroke={isSelected ? '#C53030' : 'url(#edgeGradient)'}
+                          strokeWidth={isSelected ? '2.5' : '1.5'}
+                          strokeDasharray="4 3"
+                          opacity={isSelected ? LINE_OPACITY_SELECTED : LINE_OPACITY}
+                          style={{ transition: 'all 0.3s ease' }}
+                        />
+                      );
+                    })}
+                  </g>
+
+                  {/* 节点 */}
+                  <g className="network-nodes">
+                    {nodes.map((node) => {
+                      const isSelected = selectedNode?.id === node.id;
+                      const isConnected = selectedNode && networkEdges.some(
+                        e => (e.from === node.id && e.to === selectedNode.id) || 
+                             (e.to === node.id && e.from === selectedNode.id)
+                      );
+                      const isDragging = draggingNode === node.id;
+                      
+                      // 将百分比坐标转换为 viewBox 坐标 (0-100 -> 0-1000, 0-500)
+                      let nodeX = (node.x / 100) * 1000;
+                      let nodeY = (node.y / 100) * 500;
+                      
+                      // 如果正在拖拽，应用偏移量
+                      if (isDragging && dragOffset) {
+                        nodeX += dragOffset.x;
+                        nodeY += dragOffset.y;
+                      }
+                      
+                      const nodeIndex = nodes.findIndex(n => n.id === node.id);
+                      // 首页节点 size = 1.2，在 viewBox 0-100 中
+                      // 互助广场 viewBox 是 0-1000，所以需要放大 10 倍
+                      // 但考虑到视觉效果，使用 1.2 * 8 = 9.6 作为基础大小
+                      const nodeSize = 9.6;
+                      
+                      return (
+                        <g key={node.id}>
+                          {/* 外圈脉冲动画 */}
+                          <circle
+                            cx={nodeX}
+                            cy={nodeY}
+                            r={nodeSize * 2.5}
+                            fill="none"
+                            stroke="#E53E3E"
+                            strokeWidth="0.5"
+                            opacity="0.5"
+                            className="pulse-ring"
+                            style={{
+                              animation: `pulse 3s ease-out infinite`,
+                              animationDelay: `${nodeIndex * 0.4}s`,
+                              transformOrigin: `${nodeX}px ${nodeY}px`,
+                              pointerEvents: 'none'
+                            }}
+                          />
+                          
+                          {/* 柔和光晕 */}
+                          <circle
+                            cx={nodeX}
+                            cy={nodeY}
+                            r={nodeSize * 1.8}
+                            fill="#E53E3E"
+                            opacity="0.25"
+                            filter="url(#softCityGlow)"
+                            style={{ pointerEvents: 'none' }}
+                          />
+                          
+                          {/* 中间层 - 红色 */}
+                          <circle
+                            cx={nodeX}
+                            cy={nodeY}
+                            r={nodeSize * 0.8}
+                            fill="#E53E3E"
+                            opacity="0.5"
+                            style={{ pointerEvents: 'none' }}
+                          />
+                          
+                          {/* 核心点 */}
+                          <circle
+                            cx={nodeX}
+                            cy={nodeY}
+                            r={isSelected ? nodeSize * 0.4 : nodeSize * 0.25}
+                            fill={isSelected ? '#C53030' : '#E53E3E'}
+                            opacity={isSelected ? 0.9 : 0.7}
+                            filter="url(#cityGlow)"
+                            style={{ 
+                              cursor: isDragging ? 'grabbing' : 'grab',
+                              transition: isDragging ? 'none' : 'all 0.3s ease',
+                              transformOrigin: `${nodeX}px ${nodeY}px`
+                            }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const container = networkContainerRef.current;
+                              if (container) {
+                                const rect = container.getBoundingClientRect();
+                                const svgRect = (e.currentTarget.ownerSVGElement as SVGSVGElement).getBoundingClientRect();
+                                const scaleX = rect.width / 1000;
+                                const scaleY = rect.height / 500;
+                                const svgX = nodeX * scaleX;
+                                const svgY = nodeY * scaleY;
+                                // 气泡显示在节点上方，居中
+                                let cardX = svgX;
+                                let cardY = svgY - 50; // 节点上方50px
+                                // 确保气泡不超出容器边界
+                                if (cardX < 0) cardX = 10;
+                                if (cardX > rect.width - 200) cardX = rect.width - 210;
+                                if (cardY < 0) cardY = svgY + 30; // 如果上方空间不够，显示在下方
+                                setCardPosition({ x: cardX, y: cardY });
+                              }
+                              setSelectedNode(node);
+                            }}
+                            onMouseEnter={(e) => {
+                              if (!selectedNode) {
+                                e.currentTarget.style.opacity = '1';
+                                e.currentTarget.setAttribute('r', String(nodeSize * 0.4));
+                              }
+                            }}
+                            onMouseLeave={(e) => {
+                              if (!selectedNode || selectedNode.id !== node.id) {
+                                e.currentTarget.style.opacity = String(isSelected ? 0.9 : 0.7);
+                                e.currentTarget.setAttribute('r', String(isSelected ? nodeSize * 0.4 : nodeSize * 0.25));
+                              }
+                            }}
+                          />
+                        </g>
+                      );
+                    })}
+                  </g>
+                </svg>
+
+                {/* CSS 动画 */}
+                <style jsx>{`
+                  @keyframes pulse {
+                    0% {
+                      transform: scale(0.8);
+                      opacity: 0.8;
+                    }
+                    50% {
+                      transform: scale(1.2);
+                      opacity: 0.4;
+                    }
+                    100% {
+                      transform: scale(1.5);
+                      opacity: 0;
+                    }
+                  }
+                `}</style>
+
+                {/* 信息卡片 - 气泡样式 */}
+                {selectedNode && cardPosition && (
+                  <div
+                    className="absolute z-10 animate-in fade-in slide-in-from-top-2"
+                    style={{
+                      left: `${cardPosition.x}px`,
+                      top: `${cardPosition.y}px`,
+                      transform: 'translateX(-50%)', // 居中
+                      pointerEvents: 'auto'
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {/* 气泡主体 */}
+                    <div
+                      style={{
+                        position: 'relative',
+                        padding: '12px 20px',
+                        borderRadius: '20px',
+                        background: '#A05A48',
+                        color: '#FFFFFF',
+                        fontSize: '16px',
+                        fontWeight: '500',
+                        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+                        whiteSpace: 'nowrap'
+                      }}
+                    >
+                      {selectedNode.city} · {selectedNode.memberCount ?? 0}位姐妹
+                      
+                      {/* 三角形指针 - 指向下方节点 */}
+                      <div
+                        style={{
+                          position: 'absolute',
+                          bottom: '-8px',
+                          left: '50%',
+                          transform: 'translateX(-50%)',
+                          width: 0,
+                          height: 0,
+                          borderLeft: '8px solid transparent',
+                          borderRight: '8px solid transparent',
+                          borderTop: '8px solid #A05A48'
+                        }}
+                      />
+        </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {requests.length === 0 ? (
+              <p className="text-body text-center mb-12" style={{ color: '#8A8A8A' }}>暂无</p>
+            ) : (
+              <div className="grid md:grid-cols-2 gap-4 mb-12">
+                {requests.map((req) => (
+                  <div key={req.id} className="card">
+                    <div className="flex justify-between items-start mb-2">
+                      <h4 className="text-h3" style={{ color: '#2C2C2C' }}>{req.title}</h4>
+                      <span className="px-2 py-1 rounded-full text-sm font-medium" style={{ background: '#E8D5D5', color: '#A05A48' }}>
+                        {helpTypes[req.helpType]}
+                      </span>
+                    </div>
+                    <p className="text-body mb-3 line-clamp-2" style={{ color: '#5A5A5A' }}>{req.description}</p>
+                    <div className="flex items-center text-caption mb-3" style={{ color: '#8A8A8A' }}>
+                      <span>📍 {req.location}</span>
+                    </div>
+                    {req.requester.toLowerCase() !== account?.toLowerCase() && (
+                      <button
+                        onClick={() => acceptRequest(req.id)}
+                        disabled={loading}
+                        className="btn-primary disabled:opacity-50 w-full"
+                      >
+                        {loading ? '处理中...' : '提供帮助'}
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* 互助任务部分 */}
+            <div className="relative w-full py-16 px-6 md:px-12 lg:px-20" style={{ background: '#F5F1E8', marginTop: '-5rem' }}>
+              <div className="max-w-7xl mx-auto">
+                {/* 服务卡片 */}
+                <div className="grid md:grid-cols-3 gap-6 max-w-6xl mx-auto">
+                  {/* 卡片1 - 沙发客 */}
+                  <div 
+                    className="rounded-2xl p-6 relative overflow-hidden transition-all duration-300 hover:shadow-lg cursor-pointer flex flex-col"
+                    style={{ 
+                      background: '#F5F1E8',
+                      border: '1px solid rgba(196, 113, 94, 0.2)'
+                    }}
+                  >
+                    {/* 图标框 */}
+                    <div 
+                      className="w-12 h-12 rounded-lg flex items-center justify-center mb-4"
+                      style={{ 
+                        background: 'rgba(255, 255, 255, 0.6)',
+                        border: '1px solid rgba(196, 113, 94, 0.3)'
+                      }}
+                    >
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" style={{ color: '#C4715E' }}>
+                        <path d="M3 9L12 2L21 9V20C21 20.5304 20.7893 21.0391 20.4142 21.4142C20.0391 21.7893 19.5304 22 19 22H5C4.46957 22 3.96086 21.7893 3.58579 21.4142C3.21071 21.0391 3 20.5304 3 20V9Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                        <path d="M9 22V12H15V22" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    </div>
+                    
+                    {/* 标题 */}
+                    <h3 
+                      className="text-xl font-semibold mb-1"
+                      style={{ color: '#A05A48' }}
+                    >
+                      沙发客
+                    </h3>
+                    
+                    {/* 英文副标题 */}
+                    <p 
+                      className="text-xs font-medium mb-3 uppercase tracking-wider"
+                      style={{ color: '#C4715E' }}
+                    >
+                      COUCH SURFING
+                    </p>
+                    
+                    {/* 描述 */}
+                    <p 
+                      className="text-sm mb-6 leading-relaxed flex-grow"
+                      style={{ color: '#5A5A5A' }}
+                    >
+                      在姐妹家借住一晚,感受当地生活的温度
+                    </p>
+                    
+                    {/* 底部信息 */}
+                    <div className="flex items-center justify-between mt-auto">
+                      <div 
+                        className="px-3 py-1 rounded-full text-xs font-medium"
+                        style={{ background: '#E8D5D5', color: '#A05A48' }}
+                      >
+                        消耗 3 Credits
+                      </div>
+                      <span 
+                        className="text-xs"
+                        style={{ color: '#8A8A8A' }}
+                      >
+                        48个活跃请求
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* 卡片2 - 一日游向导 */}
+                  <div 
+                    className="rounded-2xl p-6 relative overflow-hidden transition-all duration-300 hover:shadow-lg cursor-pointer flex flex-col"
+                    style={{ 
+                      background: '#F5F1E8',
+                      border: '1px solid rgba(196, 113, 94, 0.2)'
+                    }}
+                  >
+                    {/* 图标框 */}
+                    <div 
+                      className="w-12 h-12 rounded-lg flex items-center justify-center mb-4"
+                      style={{ 
+                        background: 'rgba(255, 255, 255, 0.6)',
+                        border: '1px solid rgba(196, 113, 94, 0.3)'
+                      }}
+                    >
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" style={{ color: '#C4715E' }}>
+                        <path d="M21 10C21 17 12 23 12 23C12 23 3 17 3 10C3 7.61305 3.94821 5.32387 5.63604 3.63604C7.32387 1.94821 9.61305 1 12 1C14.3869 1 16.6761 1.94821 18.364 3.63604C20.0518 5.32387 21 7.61305 21 10Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                        <path d="M12 13C13.6569 13 15 11.6569 15 10C15 8.34315 13.6569 7 12 7C10.3431 7 9 8.34315 9 10C9 11.6569 10.3431 13 12 13Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    </div>
+                    
+                    {/* 标题 */}
+                    <h3 
+                      className="text-xl font-semibold mb-1"
+                      style={{ color: '#A05A48' }}
+                    >
+                      一日游向导
+                    </h3>
+                    
+                    {/* 英文副标题 */}
+                    <p 
+                      className="text-xs font-medium mb-3 uppercase tracking-wider"
+                      style={{ color: '#C4715E' }}
+                    >
+                      LOCAL GUIDE
+                    </p>
+                    
+                    {/* 描述 */}
+                    <p 
+                      className="text-sm mb-6 leading-relaxed flex-grow"
+                      style={{ color: '#5A5A5A' }}
+                    >
+                      由当地姐妹带你探索那些只有本地人知道的角落
+                    </p>
+                    
+                    {/* 底部信息 */}
+                    <div className="flex items-center justify-between mt-auto">
+                      <div 
+                        className="px-3 py-1 rounded-full text-xs font-medium"
+                        style={{ background: '#E8D5D5', color: '#A05A48' }}
+                      >
+                        消耗 5 Credits
+                      </div>
+                      <span 
+                        className="text-xs"
+                        style={{ color: '#8A8A8A' }}
+                      >
+                        126个活跃请求
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* 卡片3 - 接送机 */}
+                  <div 
+                    className="rounded-2xl p-6 relative overflow-hidden transition-all duration-300 hover:shadow-lg cursor-pointer flex flex-col"
+                    style={{ 
+                      background: '#F5F1E8',
+                      border: '1px solid rgba(196, 113, 94, 0.2)'
+                    }}
+                  >
+                    {/* 图标框 */}
+                    <div 
+                      className="w-12 h-12 rounded-lg flex items-center justify-center mb-4"
+                      style={{ 
+                        background: 'rgba(255, 255, 255, 0.6)',
+                        border: '1px solid rgba(196, 113, 94, 0.3)'
+                      }}
+                    >
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" style={{ color: '#C4715E' }}>
+                        <path d="M5 17H19L17 19H7L5 17Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                        <path d="M7 13H17L19 11H5L7 13Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                        <path d="M3 9H21L19 7H5L3 9Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                        <circle cx="7" cy="17" r="1" fill="currentColor"/>
+                        <circle cx="17" cy="17" r="1" fill="currentColor"/>
+                      </svg>
+                    </div>
+                    
+                    {/* 标题 */}
+                    <h3 
+                      className="text-xl font-semibold mb-1"
+                      style={{ color: '#A05A48' }}
+                    >
+                      接送机
+                    </h3>
+                    
+                    {/* 英文副标题 */}
+                    <p 
+                      className="text-xs font-medium mb-3 uppercase tracking-wider"
+                      style={{ color: '#C4715E' }}
+                    >
+                      AIRPORT PICKUP
+                    </p>
+                    
+                    {/* 描述 */}
+                    <p 
+                      className="text-sm mb-6 leading-relaxed flex-grow"
+                      style={{ color: '#5A5A5A' }}
+                    >
+                      初到陌生城市,有人在出口等你
+                    </p>
+                    
+                    {/* 底部信息 */}
+                    <div className="flex items-center justify-between mt-auto">
+                      <div 
+                        className="px-3 py-1 rounded-full text-xs font-medium"
+                        style={{ background: '#E8D5D5', color: '#A05A48' }}
+                      >
+                        消耗 2 Credits
+                      </div>
+                      <span 
+                        className="text-xs"
+                        style={{ color: '#8A8A8A' }}
+                      >
+                        35个活跃请求
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : currentView === 'requests' ? (
+          // 请求列表
+          <div>
+            <h2 className="text-h1 mb-6" style={{ color: '#2C2C2C' }}>互助请求</h2>
+            {requests.length === 0 ? (
+              <div className="card p-12 text-center">
+                <div className="text-6xl mb-4">📭</div>
+                <p className="text-body" style={{ color: '#5A5A5A' }}>暂无开放的互助请求</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {requests.map((req) => (
+                  <div key={req.id} className="card">
+                    <div className="flex justify-between items-start mb-4">
+                      <div>
+                        <h3 className="text-h2 mb-2" style={{ color: '#2C2C2C' }}>{req.title}</h3>
+                        <p className="text-body mb-3" style={{ color: '#5A5A5A' }}>{req.description}</p>
+                        <div className="flex items-center gap-4 text-caption" style={{ color: '#8A8A8A' }}>
+                          <span>📍 {req.location}</span>
+                          <span>🏷️ {helpTypes[req.helpType]}</span>
+                          <span>⏰ {new Date(Number(req.timestamp) * 1000).toLocaleString('zh-CN')}</span>
+                        </div>
+                      </div>
+                      <span className="px-3 py-1 rounded-full text-sm font-medium" style={{ background: '#E8D5D5', color: '#A05A48' }}>
+                        开放中
+                      </span>
+                    </div>
+                    {req.requester.toLowerCase() !== account?.toLowerCase() && (
+                      <button
+                        onClick={() => acceptRequest(req.id)}
+                        disabled={loading}
+                        className="btn-primary disabled:opacity-50"
+                      >
+                        {loading ? '处理中...' : '提供帮助'}
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : currentView === 'create' ? (
+          // 创建请求
+          <div className="max-w-2xl mx-auto">
+            <h2 className="text-h1 mb-6" style={{ color: '#2C2C2C' }}>发布互助请求</h2>
+            <div className="card p-8">
+              <div className="space-y-6">
+                <div>
+                  <label className="block text-caption font-medium mb-2" style={{ color: '#5A5A5A' }}>
+                    标题
+                  </label>
+                  <input
+                    type="text"
+                    value={reqTitle}
+                    onChange={(e) => setReqTitle(e.target.value)}
+                    placeholder="例如：需要当地交通信息"
+                    className="w-full px-4 py-3 border rounded-lg text-body focus:outline-none focus:ring-2"
+                    style={{ borderColor: '#E8D5D5', background: '#FFFFFF', color: '#2C2C2C' }}
+                  />
+                </div>
+                <div>
+                  <label className="block text-caption font-medium mb-2" style={{ color: '#5A5A5A' }}>
+                    详细描述
+                  </label>
+                  <textarea
+                    value={reqDescription}
+                    onChange={(e) => setReqDescription(e.target.value)}
+                    placeholder="请详细描述您需要的帮助..."
+                    rows={5}
+                    className="w-full px-4 py-3 border rounded-lg text-body focus:outline-none focus:ring-2 resize-none"
+                    style={{ borderColor: '#E8D5D5', background: '#FFFFFF', color: '#2C2C2C' }}
+                  />
+                </div>
+                <div>
+                  <label className="block text-caption font-medium mb-2" style={{ color: '#5A5A5A' }}>
+                    地点
+                  </label>
+                  <input
+                    type="text"
+                    value={reqLocation}
+                    onChange={(e) => setReqLocation(e.target.value)}
+                    placeholder="例如：东京，日本"
+                    className="w-full px-4 py-3 border rounded-lg text-body focus:outline-none focus:ring-2"
+                    style={{ borderColor: '#E8D5D5', background: '#FFFFFF', color: '#2C2C2C' }}
+                  />
+                </div>
+                <div>
+                  <label className="block text-caption font-medium mb-2" style={{ color: '#5A5A5A' }}>
+                    帮助类型
+                  </label>
+                  <select
+                    value={reqHelpType}
+                    onChange={(e) => setReqHelpType(Number(e.target.value))}
+                    className="w-full px-4 py-3 border rounded-lg text-body focus:outline-none focus:ring-2"
+                    style={{ borderColor: '#E8D5D5', background: '#FFFFFF', color: '#2C2C2C' }}
+                  >
+                    {helpTypes.map((type, idx) => (
+                      <option key={idx} value={idx}>
+                        {type} (消耗 {creditCosts[idx]} Credits)
+                      </option>
+                    ))}
+                  </select>
+                  {user && (
+                    <p className="text-caption mt-2" style={{ color: '#8A8A8A' }}>
+                      当前Credits余额: <span style={{ color: user.credits >= creditCosts[reqHelpType] ? '#C4715E' : '#A05A48', fontWeight: 'bold' }}>
+                        {user.credits}
+                      </span> / 需要 {creditCosts[reqHelpType]} Credits
+                    </p>
+                  )}
+        </div>
+                <button
+                  onClick={createRequest}
+                  disabled={loading}
+                  className="w-full btn-primary disabled:opacity-50"
+                >
+                  {loading ? '发布中...' : '发布请求'}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : currentView === 'profile' ? (
+          // 个人中心
+          <div className="max-w-2xl mx-auto">
+            <h2 className="text-h1 mb-6" style={{ color: '#2C2C2C' }}>个人中心</h2>
+            <div className="card p-8">
+              <div className="text-center mb-6">
+                <div className="w-24 h-24 rounded-full mx-auto mb-4 flex items-center justify-center text-4xl font-medium text-white" style={{ background: '#C4715E' }}>
+                  {user?.name ? user.name.charAt(0).toUpperCase() : account?.charAt(2).toUpperCase() || '?'}
+                </div>
+                <h3 className="text-h2" style={{ color: '#2C2C2C' }}>
+                  {user?.name || '旅行者'}
+                </h3>
+                {user?.location && (
+                  <p className="text-body mt-2" style={{ color: '#5A5A5A' }}>📍 {user.location}</p>
+                )}
+              </div>
+              
+              <div className="grid grid-cols-4 gap-4 mb-6">
+                <div className="text-center p-4 rounded-lg" style={{ background: '#E8D5D5' }}>
+                  <div className="text-2xl font-bold" style={{ color: '#C4715E' }}>
+                    {user?.credits ?? 10}
+                  </div>
+                  <div className="text-caption mt-1" style={{ color: '#5A5A5A' }}>Credits</div>
+                </div>
+                <div className="text-center p-4 rounded-lg" style={{ background: '#E8D5D5' }}>
+                  <div className="text-2xl font-bold" style={{ color: '#C4715E' }}>
+                    {user?.trustScore || 50}
+                  </div>
+                  <div className="text-caption mt-1" style={{ color: '#5A5A5A' }}>信任评分</div>
+                </div>
+                <div className="text-center p-4 rounded-lg" style={{ background: '#E8D5D5' }}>
+                  <div className="text-2xl font-bold" style={{ color: '#C4715E' }}>
+                    {user?.totalHelps || 0}
+                  </div>
+                  <div className="text-caption mt-1" style={{ color: '#5A5A5A' }}>提供帮助</div>
+                </div>
+                <div className="text-center p-4 rounded-lg" style={{ background: '#E8D5D5' }}>
+                  <div className="text-2xl font-bold" style={{ color: '#C4715E' }}>
+                    {user?.totalReceived || 0}
+                  </div>
+                  <div className="text-caption mt-1" style={{ color: '#5A5A5A' }}>接受帮助</div>
+                </div>
+              </div>
+
+              <div className="border-t pt-6" style={{ borderColor: '#E8D5D5' }}>
+                <h4 className="text-h3 mb-2" style={{ color: '#2C2C2C' }}>钱包地址</h4>
+                <p className="text-caption font-mono" style={{ color: '#8A8A8A' }}>{account}</p>
+              </div>
+            </div>
+        </div>
+        ) : null}
+      </main>
+
+      {/* 音乐控制按钮 - 右下角固定位置 */}
+      {account && (
+        <button
+          onClick={toggleMusic}
+          className="fixed bottom-6 right-6 z-50 w-14 h-14 rounded-full flex items-center justify-center shadow-lg transition-all duration-300 hover:scale-110"
+          style={{
+            background: isPlaying ? '#C4715E' : '#E8D5D5',
+            color: isPlaying ? '#FFFFFF' : '#A05A48',
+            border: '2px solid rgba(196, 113, 94, 0.3)'
+          }}
+          aria-label={isPlaying ? '暂停音乐' : '播放音乐'}
+        >
+          {isPlaying ? (
+            // 暂停图标
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"/>
+            </svg>
+          ) : (
+            // 播放图标
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M8 5v14l11-7z"/>
+            </svg>
+          )}
+        </button>
+      )}
+
+      {/* 隐藏的音频元素（用于全站播放） */}
+      {account && (
+        <audio
+          ref={(el) => {
+            if (el) {
+              audioRef.current = el;
+              el.volume = 0.5; // 设置音量为 50%
+            }
+          }}
+          src="/music/andata.mp3"
+          loop
+          style={{ display: 'none' }}
+        />
+      )}
+    </div>
+  );
+}
