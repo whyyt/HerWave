@@ -1908,7 +1908,7 @@ export default function Home() {
             )}
 
             {/* 互助任务部分 */}
-            <div className="relative w-full py-16 px-6 md:px-12 lg:px-20" style={{ background: '#F5F1E8', marginTop: '-5rem' }}>
+            <div className="relative w-full py-16 px-6 md:px-12 lg:px-20" style={{ background: '#F5F1E8', marginTop: '3rem' }}>
               <div className="max-w-7xl mx-auto">
                 {/* 服务卡片 */}
                 <div className="grid md:grid-cols-3 gap-6 max-w-6xl mx-auto">
