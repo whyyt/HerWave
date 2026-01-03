@@ -37,7 +37,7 @@ const CONTRACT_ABI = [
 ];
 
 // 合约地址（每次重新部署后需要更新）
-const CONTRACT_ADDRESS = "0xC2E45590a14C638662966573B6982b25bbbe6dFe"; // Sepolia 测试网
+const CONTRACT_ADDRESS = "0x94EbED18D4f2B585e1792B977b50c8Fd2aeE6e5c"; // Sepolia 测试网
 
 // Sepolia 测试网配置
 const SEPOLIA_CHAIN_CONFIG = {
@@ -1476,8 +1476,39 @@ export default function Home() {
       return;
     }
     
+    // 钱包签名认证
+    if (!provider) {
+      setToastMessage('请先连接钱包');
+      setTimeout(() => setToastMessage(null), 3000);
+      return;
+    }
+    
     setLoading(true);
     try {
+      // 获取签名者
+      const signer = await provider.getSigner();
+      
+      // 构建签名消息
+      const message = `发布互助请求\n\n标题: ${reqTitle}\n描述: ${reqDescription}\n地点: ${reqLocation}\n帮助类型: ${helpTypes[reqHelpType]}\n消耗 Wave: ${requiredWave}\n\n请签名确认发布此请求。`;
+      
+      // 请求用户签名
+      setToastMessage('请在弹出的 MetaMask 窗口中签名确认...');
+      let signature: string;
+      try {
+        signature = await signer.signMessage(message);
+        console.log('✅ 签名成功:', signature);
+      } catch (signError: any) {
+        // 如果用户拒绝了签名请求
+        if (signError.code === 4001 || signError.message?.includes('user rejected') || signError.message?.includes('User rejected')) {
+          setToastMessage('签名已取消');
+          setTimeout(() => setToastMessage(null), 3000);
+          setLoading(false);
+          return;
+        }
+        throw signError;
+      }
+      
+      // 签名成功后继续执行
       // TODO: 未来对接合约
       // if (contract) {
       //   const tx = await contract.createRequest(reqTitle, reqDescription, reqLocation, reqHelpType);
@@ -1540,7 +1571,7 @@ export default function Home() {
         await loadRequests(contract);
       }
       
-      setToastMessage(`✅ 请求发布成功！已扣除 ${requiredWave} Wave`);
+      setToastMessage('✅ 已成功发布');
       setTimeout(() => setToastMessage(null), 3000);
       setCurrentView('dashboard');
     } catch (error: any) {
@@ -1560,6 +1591,51 @@ export default function Home() {
   const takeHelp = async (requestId: number, helperAddress: string) => {
     if (!account || account.toLowerCase() !== helperAddress.toLowerCase()) {
       setToastMessage('请先连接钱包');
+      setTimeout(() => setToastMessage(null), 3000);
+      return;
+    }
+    
+    if (!provider) {
+      setToastMessage('请先连接钱包');
+      setTimeout(() => setToastMessage(null), 3000);
+      return;
+    }
+
+    // 钱包签名认证
+    try {
+      // 获取签名者
+      const signer = await provider.getSigner();
+      
+      // 查找请求信息
+      let request = helpState.requests.find(r => r.id === requestId);
+      if (!request) {
+        request = requests.find(r => r.id === requestId);
+      }
+      
+      if (!request) {
+        setToastMessage('未找到请求信息');
+        setTimeout(() => setToastMessage(null), 3000);
+        return;
+      }
+      
+      // 构建签名消息
+      const message = `接受互助请求\n\n请求ID: ${requestId}\n标题: ${request.title}\n地点: ${request.location}\n帮助类型: ${helpTypes[request.helpType]}\n\n请签名确认接受此帮助请求。`;
+      
+      // 请求用户签名
+      setToastMessage('请在弹出的 MetaMask 窗口中签名确认...');
+      const signature = await signer.signMessage(message);
+      console.log('✅ 签名成功:', signature);
+      
+      // 签名成功后继续执行
+    } catch (signError: any) {
+      // 如果用户拒绝了签名请求
+      if (signError.code === 4001 || signError.message?.includes('user rejected') || signError.message?.includes('User rejected')) {
+        setToastMessage('签名已取消');
+        setTimeout(() => setToastMessage(null), 3000);
+        return;
+      }
+      console.error('签名失败:', signError);
+      setToastMessage('签名失败: ' + (signError.message || '未知错误'));
       setTimeout(() => setToastMessage(null), 3000);
       return;
     }
@@ -1596,7 +1672,7 @@ export default function Home() {
       return newState;
     });
 
-    setToastMessage('✅ 已接单！请求已移至个人中心');
+    setToastMessage('请移步个人中心查看帮助详情');
     setTimeout(() => setToastMessage(null), 3000);
 
     // TODO: 未来对接合约
@@ -1616,6 +1692,12 @@ export default function Home() {
       return;
     }
 
+    if (!provider) {
+      setToastMessage('请先连接钱包');
+      setTimeout(() => setToastMessage(null), 3000);
+      return;
+    }
+
     // 先获取 helperAddress（从 helpState 或链上请求中查找）
     let request = helpState.requests.find(r => r.id === requestId);
     if (!request) {
@@ -1624,6 +1706,42 @@ export default function Home() {
     const helperAddress = request?.helper;
     if (!helperAddress) {
       setToastMessage('未找到帮助者信息');
+      setTimeout(() => setToastMessage(null), 3000);
+      return;
+    }
+
+    // 钱包签名认证
+    if (!request) {
+      setToastMessage('未找到请求信息');
+      setTimeout(() => setToastMessage(null), 3000);
+      return;
+    }
+
+    try {
+      // 获取签名者
+      const signer = await provider.getSigner();
+      
+      // 构建签名消息
+      const message = `确认帮助完成\n\n请求ID: ${requestId}\n标题: ${request.title}\n帮助者: ${helperAddress.slice(0, 6)}...${helperAddress.slice(-4)}\n\n请签名确认此次帮助已完成。`;
+      
+      // 请求用户签名
+      setToastMessage('请在弹出的 MetaMask 窗口中签名确认...');
+      let signature: string;
+      try {
+        signature = await signer.signMessage(message);
+        console.log('✅ 签名成功:', signature);
+      } catch (signError: any) {
+        // 如果用户拒绝了签名请求
+        if (signError.code === 4001 || signError.message?.includes('user rejected') || signError.message?.includes('User rejected')) {
+          setToastMessage('签名已取消');
+          setTimeout(() => setToastMessage(null), 3000);
+          return;
+        }
+        throw signError;
+      }
+    } catch (signError: any) {
+      console.error('签名失败:', signError);
+      setToastMessage('签名失败: ' + (signError.message || '未知错误'));
       setTimeout(() => setToastMessage(null), 3000);
       return;
     }
@@ -1660,7 +1778,7 @@ export default function Home() {
 
     // 更新用户的 totalReceived（被帮助者）和 totalHelps（帮助者）
     // 被帮助者（requesterAddress）的 totalReceived +1
-    // 如果被帮助者是当前用户，更新 totalReceived
+    // 如果被帮助者是当前用户，立即更新前端状态
     if (user && account.toLowerCase() === requesterAddress.toLowerCase()) {
       setUser({
         ...user,
@@ -1669,7 +1787,7 @@ export default function Home() {
     }
     
     // 帮助者（helperAddress）的 totalHelps +1
-    // 如果帮助者是当前用户，直接更新前端状态
+    // 如果帮助者是当前用户，立即更新前端状态
     if (helperAddress && helperAddress.toLowerCase() === account.toLowerCase()) {
       if (user) {
         setUser({
@@ -1686,15 +1804,14 @@ export default function Home() {
       setTimeout(async () => {
         try {
           await loadUser(account, contract);
-          // 如果帮助者也是当前用户（即帮助者和被帮助者是同一个人），
-          // 重新加载后 totalHelps 和 totalReceived 都会更新
+          // 重新加载后，totalHelps 和 totalReceived 都会从链上同步
         } catch (error) {
           console.warn('重新加载用户信息失败:', error);
         }
       }, 1000);
     }
 
-    setToastMessage('✅ 已完成！帮助者获得 +1 Wave');
+    setToastMessage('✅ 已完成！受帮助次数和帮助次数已更新，帮助者获得 +1 Wave');
     setTimeout(() => setToastMessage(null), 3000);
 
     // TODO: 未来对接合约
