@@ -37,7 +37,7 @@ const CONTRACT_ABI = [
 ];
 
 // 合约地址（每次重新部署后需要更新）
-const CONTRACT_ADDRESS = "0x94EbED18D4f2B585e1792B977b50c8Fd2aeE6e5c"; // Sepolia 测试网
+const CONTRACT_ADDRESS = "0x96EA6c0bC52694154061cCc3249d29717413d6c8"; // Sepolia 测试网
 
 // Sepolia 测试网配置
 const SEPOLIA_CHAIN_CONFIG = {
@@ -1148,6 +1148,42 @@ export default function Home() {
         // 网络切换失败不影响连接，用户可以手动切换
       }
       
+      // 钱包签名认证
+      try {
+        const message = `连接 Her Weave 钱包\n\n账户地址: ${accounts[0]}\n\n请签名确认连接此钱包到 Her Weave 平台。`;
+        
+        setToastMessage('请在弹出的 MetaMask 窗口中签名确认...');
+        try {
+          const signature = await signer.signMessage(message);
+          console.log('✅ 签名成功:', signature);
+          setToastMessage('✅ 钱包连接成功');
+          setTimeout(() => setToastMessage(null), 3000);
+        } catch (signError: any) {
+          // 如果用户拒绝了签名请求
+          if (signError.code === 4001 || signError.message?.includes('user rejected') || signError.message?.includes('User rejected')) {
+            setToastMessage('签名已取消，钱包连接已断开');
+            setTimeout(() => setToastMessage(null), 3000);
+            // 断开连接
+            setAccount(null);
+            setProvider(null);
+            setContract(null);
+            setLoading(false);
+            return;
+          }
+          throw signError;
+        }
+      } catch (signError: any) {
+        console.error('签名失败:', signError);
+        setToastMessage('签名失败: ' + (signError.message || '未知错误'));
+        setTimeout(() => setToastMessage(null), 3000);
+        // 断开连接
+        setAccount(null);
+        setProvider(null);
+        setContract(null);
+        setLoading(false);
+        return;
+      }
+      
       // 连接成功后立即跳转到仪表板页面
       setCurrentView('dashboard');
       
@@ -1262,12 +1298,20 @@ export default function Home() {
           if (userData && userData.exists) {
             // 处理wave字段（可能是BigNumber）
             const wave = userData.wave ? Number(userData.wave) : 10;
+            // 保留当前用户状态中可能已经更新的统计数字（如果存在）
+            // 这样可以避免在 confirmHelpCompleted 后重新加载时覆盖更新
+            const currentTotalHelps = user?.totalHelps ?? 0;
+            const currentTotalReceived = user?.totalReceived ?? 0;
+            const currentWave = user?.wave ?? 0;
+            
             setUser({
               name: userData.name || '',
               location: userData.location || '',
               trustScore: Number(userData.trustScore) || 50,
-              totalHelps: Number(userData.totalHelps) || 0,
-              totalReceived: Number(userData.totalReceived) || 0,
+              // 如果当前状态中的统计数字更大，说明已经更新过，保留更新后的值
+              totalHelps: Math.max(Number(userData.totalHelps) || 0, currentTotalHelps),
+              totalReceived: Math.max(Number(userData.totalReceived) || 0, currentTotalReceived),
+              // wave 使用链上的值，但会通过 getUserWave 函数结合本地调整
               wave: wave,
               exists: true
             });
@@ -1515,19 +1559,23 @@ export default function Home() {
       //   await tx.wait();
       // }
       
-      // 扣除 Wave
+      // 扣除 Wave（根据帮助类型扣除对应的wave）
+      // waveCosts: [2, 5, 3] 对应 ['机场/车站接送', '一日游导览', '沙发客住宿']
+      const waveToDeduct = requiredWave; // requiredWave 已经是 waveCosts[reqHelpType]
+      
       setHelpState(prevState => {
         const updatedProfiles = { ...prevState.profiles };
         if (!updatedProfiles[account]) {
           updatedProfiles[account] = { address: account, wave: 0 };
         }
-        updatedProfiles[account].wave = Math.max(0, updatedProfiles[account].wave - requiredWave);
+        // 本地wave调整：扣除对应的wave（负数表示扣除）
+        updatedProfiles[account].wave = (updatedProfiles[account].wave || 0) - waveToDeduct;
         
         // 如果链上也有 wave，需要同时扣除
         if (user) {
           setUser({
             ...user,
-            wave: Math.max(0, user.wave - requiredWave)
+            wave: Math.max(0, (user.wave || 0) - waveToDeduct)
           });
         }
         
@@ -1769,7 +1817,8 @@ export default function Home() {
       if (!updatedProfiles[helperAddress]) {
         updatedProfiles[helperAddress] = { address: helperAddress, wave: 0 };
       }
-      updatedProfiles[helperAddress].wave += 1;
+      // 帮助者获得 +1 Wave（无论什么类型的帮助）
+      updatedProfiles[helperAddress].wave = (updatedProfiles[helperAddress].wave || 0) + 1;
 
       const newState = { requests: updatedRequests, profiles: updatedProfiles };
       saveHelpState(newState);
@@ -1792,24 +1841,17 @@ export default function Home() {
       if (user) {
         setUser({
           ...user,
-          totalHelps: (user.totalHelps || 0) + 1
+          totalHelps: (user.totalHelps || 0) + 1,
+          // 帮助者获得 +1 Wave
+          wave: (user.wave || 0) + 1
         });
       }
     }
     
-    // 重新加载当前用户信息，确保统计数据同步
-    // 这样无论帮助者是否是当前用户，都能看到更新后的数字
-    if (contract && account) {
-      // 延迟重新加载用户信息，确保统计数据更新
-      setTimeout(async () => {
-        try {
-          await loadUser(account, contract);
-          // 重新加载后，totalHelps 和 totalReceived 都会从链上同步
-        } catch (error) {
-          console.warn('重新加载用户信息失败:', error);
-        }
-      }, 1000);
-    }
+    // 注意：由于链上数据可能还没有更新（因为还没有调用合约），
+    // 我们不应该立即重新加载用户信息，否则会覆盖掉前端的更新
+    // 只有在链上数据确实更新后，才重新加载
+    // TODO: 未来对接合约后，在链上数据更新完成后再重新加载
 
     setToastMessage('✅ 已完成！受帮助次数和帮助次数已更新，帮助者获得 +1 Wave');
     setTimeout(() => setToastMessage(null), 3000);
@@ -1860,10 +1902,17 @@ export default function Home() {
 
   // 获取用户 wave
   const getUserWave = (address: string): number => {
-    const chainWave = user?.wave || 0;
+    // 如果查询的是当前用户，使用 user 状态
+    if (address.toLowerCase() === account?.toLowerCase() && user) {
+      const chainWave = user.wave || 0;
+      const localProfile = helpState.profiles[address];
+      const localWave = localProfile?.wave || 0;
+      // 确保wave不为负数
+      return Math.max(0, chainWave + localWave);
+    }
+    // 如果查询的是其他用户，只使用本地状态
     const localProfile = helpState.profiles[address];
-    const localWave = localProfile?.wave || 0;
-    return chainWave + localWave;
+    return localProfile?.wave || 0;
   };
 
   // 保留原有的 acceptRequest（兼容性，调用新的 takeHelp）
