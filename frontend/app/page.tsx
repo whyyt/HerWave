@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { ethers } from 'ethers';
 
 // 扩展 Window 接口以支持 ethereum
@@ -21,11 +21,11 @@ const CONTRACT_ABI = [
   "function acceptRequest(uint256 _requestId) public",
   "function completeRequest(uint256 _requestId) public",
   "function submitReview(uint256 _requestId, address _reviewed, uint256 _rating, string memory _comment) public",
-  "function getUser(address _user) public view returns (tuple(string name, string location, uint256 trustScore, uint256 totalHelps, uint256 totalReceived, uint256 credits, bool exists))",
-  "function getUserCredits(address _user) public view returns (uint256)",
-  "function getCreditCost(uint256 _helpType) public view returns (uint256)",
-  "function creditCosts(uint256) public view returns (uint256)",
-  "function CREDIT_REWARD() public view returns (uint256)",
+  "function getUser(address _user) public view returns (tuple(string name, string location, uint256 trustScore, uint256 totalHelps, uint256 totalReceived, uint256 wave, bool exists))",
+  "function getUserWave(address _user) public view returns (uint256)",
+  "function getWaveCost(uint256 _helpType) public view returns (uint256)",
+  "function waveCosts(uint256) public view returns (uint256)",
+  "function WAVE_REWARD() public view returns (uint256)",
   "function getRequest(uint256 _requestId) public view returns (tuple(uint256 id, address requester, string title, string description, string location, uint256 timestamp, uint8 status, address helper, uint256 helpType))",
   "function requestCount() public view returns (uint256)",
   "function getOpenRequests() public view returns (tuple(uint256 id, address requester, string title, string description, string location, uint256 timestamp, uint8 status, address helper, uint256 helpType)[])",
@@ -37,7 +37,7 @@ const CONTRACT_ABI = [
 ];
 
 // 合约地址（每次重新部署后需要更新）
-const CONTRACT_ADDRESS = "0x3CF026df764780a5a3bB54db40850f23c95081C1"; // Sepolia 测试网
+const CONTRACT_ADDRESS = "0x9f4Fe66034468092a99EBe72D029F1E1d2A24D32"; // Sepolia 测试网
 
 // Sepolia 测试网配置
 const SEPOLIA_CHAIN_CONFIG = {
@@ -73,20 +73,34 @@ interface User {
   trustScore: number;
   totalHelps: number;
   totalReceived: number;
-  credits: number;
+  wave: number;
   exists: boolean;
 }
 
+// 扩展的请求状态类型
+type RequestStatus = 'OPEN' | 'IN_PROGRESS' | 'COMPLETED';
+
 interface Request {
   id: number;
-  requester: string;
+  requester: string; // requesterAddress
   title: string;
   description: string;
   location: string;
   timestamp: number;
-  status: number; // 0: Open, 1: Matched, 2: Completed, 3: Cancelled
-  helper: string;
+  status: number; // 0: Open, 1: Matched, 2: Completed, 3: Cancelled (保留兼容)
+  helper: string; // helperAddress
   helpType: number;
+  // 新增字段
+  statusNew?: RequestStatus; // 新的状态字段
+  nftMinted?: boolean;
+  waveRewarded?: boolean;
+  createdAt?: number; // 创建时间戳
+}
+
+// 用户资料接口（扩展）
+interface UserProfile {
+  address: string;
+  wave: number;
 }
 
 interface Thread {
@@ -172,31 +186,61 @@ const defaultHotspots = [
   { x: 92, y: 76, label: "悉尼" },
 ];
 
-// 生成100-500之间的随机人数
-function getRandomMemberCount(): number {
-  return Math.floor(Math.random() * 401) + 100; // 100-500
+// ============================================
+// 修复：确定性随机数生成器（Seeded Random）
+// ============================================
+// 问题：之前使用 Math.random() 在模块顶层生成随机数，导致 SSR 和客户端 hydration 时结果不一致
+// 解决：使用 seeded random，seed 基于 chainId + contractAddress，确保同一环境生成相同结果
+class SeededRandom {
+  private seed: number;
+
+  constructor(seed: string | number) {
+    // 将字符串 seed 转换为数字
+    if (typeof seed === 'string') {
+      let hash = 0;
+      for (let i = 0; i < seed.length; i++) {
+        const char = seed.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash & hash; // Convert to 32bit integer
+      }
+      this.seed = Math.abs(hash);
+    } else {
+      this.seed = Math.abs(seed);
+    }
+  }
+
+  // 生成 0-1 之间的随机数
+  next(): number {
+    this.seed = (this.seed * 9301 + 49297) % 233280;
+    return this.seed / 233280;
+  }
+
+  // 生成 min-max 之间的随机整数
+  nextInt(min: number, max: number): number {
+    return Math.floor(this.next() * (max - min + 1)) + min;
+  }
 }
 
-// SVG 网络节点示例数据
-const networkNodes: NetworkNode[] = [
-  { id: 'cn', country: '中国', city: '北京', x: 75, y: 32, memberCount: getRandomMemberCount() },
-  { id: 'jp', country: '日本', city: '东京', x: 82, y: 38, memberCount: getRandomMemberCount() },
-  { id: 'kr', country: '韩国', city: '首尔', x: 78, y: 36, memberCount: getRandomMemberCount() },
-  { id: 'tw', country: '台湾', city: '俄罗斯', x: 77, y: 46, memberCount: getRandomMemberCount() },
-  { id: 'th', country: '泰国', city: '曼谷', x: 68, y: 52, memberCount: getRandomMemberCount() },
-  { id: 'sg', country: '新加坡', city: '新加坡', x: 68, y: 62, memberCount: getRandomMemberCount() },
-  { id: 'us', country: '美国', city: '纽约', x: 24, y: 34, memberCount: getRandomMemberCount() },
-  { id: 'us2', country: '美国', city: '洛杉矶', x: 14, y: 40, memberCount: getRandomMemberCount() },
-  { id: 'uk', country: '英国', city: '伦敦', x: 46, y: 26, memberCount: getRandomMemberCount() },
-  { id: 'fr', country: '法国', city: '巴黎', x: 48, y: 30, memberCount: getRandomMemberCount() },
-  { id: 'de', country: '德国', city: '柏林', x: 52, y: 28, memberCount: getRandomMemberCount() },
-  { id: 'it', country: '意大利', city: '罗马', x: 52, y: 36, memberCount: getRandomMemberCount() },
-  { id: 'au', country: '澳大利亚', city: '悉尼', x: 92, y: 76, memberCount: getRandomMemberCount() },
-  { id: 'ae', country: '阿联酋', city: '迪拜', x: 62, y: 48, memberCount: getRandomMemberCount() },
-  { id: 'ca', country: '加拿大', city: '多伦多', x: 22, y: 32, memberCount: getRandomMemberCount() },
+// SVG 网络节点基础数据（固定坐标，不包含随机 memberCount）
+const NETWORK_NODES_BASE: Omit<NetworkNode, 'memberCount'>[] = [
+  { id: 'cn', country: '中国', city: '北京', x: 75, y: 32 },
+  { id: 'jp', country: '日本', city: '东京', x: 82, y: 38 },
+  { id: 'kr', country: '韩国', city: '首尔', x: 78, y: 36 },
+  { id: 'tw', country: '台湾', city: '台北', x: 77, y: 46 },
+  { id: 'th', country: '泰国', city: '曼谷', x: 68, y: 52 },
+  { id: 'sg', country: '新加坡', city: '新加坡', x: 68, y: 62 },
+  { id: 'us', country: '美国', city: '纽约', x: 24, y: 34 },
+  { id: 'us2', country: '美国', city: '洛杉矶', x: 14, y: 40 },
+  { id: 'uk', country: '英国', city: '伦敦', x: 46, y: 26 },
+  { id: 'fr', country: '法国', city: '巴黎', x: 48, y: 30 },
+  { id: 'de', country: '德国', city: '柏林', x: 52, y: 28 },
+  { id: 'it', country: '意大利', city: '罗马', x: 52, y: 36 },
+  { id: 'au', country: '澳大利亚', city: '悉尼', x: 92, y: 76 },
+  { id: 'ae', country: '阿联酋', city: '迪拜', x: 62, y: 48 },
+  { id: 'ca', country: '加拿大', city: '多伦多', x: 22, y: 32 },
 ];
 
-// 生成网络连接线（简化：每个节点连接到最近的2-3个节点，避免全连接）
+// 生成网络连接线（确定性算法，基于节点坐标）
 function generateEdges(nodes: NetworkNode[]): NetworkEdge[] {
   const edges: NetworkEdge[] = [];
   const maxConnections = 3;
@@ -211,8 +255,14 @@ function generateEdges(nodes: NetworkNode[]): NetworkEdge[] {
         distances.push({ index: j, distance });
       }
     }
-    // 按距离排序，选择最近的几个
-    distances.sort((a, b) => a.distance - b.distance);
+    // 按距离排序，选择最近的几个（确定性排序）
+    distances.sort((a, b) => {
+      if (a.distance !== b.distance) {
+        return a.distance - b.distance;
+      }
+      // 如果距离相同，按索引排序确保确定性
+      return a.index - b.index;
+    });
     const connections = distances.slice(0, maxConnections);
     connections.forEach(conn => {
       // 避免重复边
@@ -229,13 +279,50 @@ function generateEdges(nodes: NetworkNode[]): NetworkEdge[] {
   return edges;
 }
 
-const networkEdges = generateEdges(networkNodes);
-
 // 网络层视觉控制
 const LINE_OPACITY = 0.65;               // 连接线默认透明度（0-1）
 const LINE_OPACITY_SELECTED = 0.85;       // 选中时连接线透明度（0-1）
 const NODE_GLOW_INTENSITY = 0.4;         // 节点发光强度（0-1）
 const NODE_GLOW_SELECTED = 0.8;          // 选中节点发光强度（0-1）
+
+// ============================================
+// 状态管理：帮助流程数据（localStorage 持久化）
+// ============================================
+interface UserProfile {
+  address: string;
+  wave: number;
+}
+
+interface HelpRequestState {
+  requests: Request[];
+  profiles: Record<string, UserProfile>;
+}
+
+const STORAGE_KEY = 'herweave_help_requests';
+
+const loadHelpState = (): HelpRequestState => {
+  if (typeof window === 'undefined') {
+    return { requests: [], profiles: {} };
+  }
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      return JSON.parse(saved);
+    }
+  } catch (error) {
+    console.warn('Failed to load help state:', error);
+  }
+  return { requests: [], profiles: {} };
+};
+
+const saveHelpState = (state: HelpRequestState) => {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch (error) {
+    console.warn('Failed to save help state:', error);
+  }
+};
 
 export default function Home() {
   const [account, setAccount] = useState<string | null>(null);
@@ -251,6 +338,10 @@ export default function Home() {
   const [showDisconnect, setShowDisconnect] = useState(false);
   const disconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
   
+  // 帮助流程状态管理
+  const [helpState, setHelpState] = useState<HelpRequestState>(() => loadHelpState());
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  
   // SVG 网络图状态
   const [selectedNode, setSelectedNode] = useState<NetworkNode | null>(null);
   const [cardPosition, setCardPosition] = useState<{ x: number; y: number } | null>(null);
@@ -260,6 +351,72 @@ export default function Home() {
   const [draggingNode, setDraggingNode] = useState<string | null>(null);
   const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
   const [dragOffset, setDragOffset] = useState<{ x: number; y: number } | null>(null);
+  
+  // ============================================
+  // 修复：使用 useMemo 生成确定性节点和连线
+  // ============================================
+  // 问题：之前在模块顶层使用 Math.random() 生成节点，导致 SSR 和客户端不一致
+  // 解决：在组件内使用 useMemo，seed 基于 chainId + contractAddress，确保可复现
+  const [chainId, setChainId] = useState<number | null>(null);
+  
+  // 获取当前链 ID（用于生成 seed）
+  useEffect(() => {
+    if (provider) {
+      provider.getNetwork()
+        .then(network => {
+          setChainId(Number(network.chainId));
+        })
+        .catch((error: any) => {
+          // 处理网络切换错误
+          if (error.code === 'NETWORK_ERROR' || error.message?.includes('network changed')) {
+            console.log('🔄 检测到网络切换，等待后重试获取链 ID...');
+            setTimeout(() => {
+              provider.getNetwork()
+                .then(network => {
+                  setChainId(Number(network.chainId));
+                })
+                .catch(() => {
+                  setChainId(null);
+                });
+            }, 1000);
+          } else {
+            setChainId(null);
+          }
+        });
+    } else {
+      setChainId(null);
+    }
+  }, [provider]);
+  
+  // 生成确定性节点（基于 seed）
+  const networkNodes = useMemo(() => {
+    // 只在客户端执行
+    if (typeof window === 'undefined') {
+      return NETWORK_NODES_BASE.map(node => ({ ...node, memberCount: 300 }));
+    }
+    
+    // 生成 seed：chainId + contractAddress（如果都没有，使用固定值）
+    const seedString = chainId !== null 
+      ? `${chainId}_${CONTRACT_ADDRESS}` 
+      : `herweave_${CONTRACT_ADDRESS}`;
+    const rng = new SeededRandom(seedString);
+    
+    // 为每个节点生成确定性的 memberCount
+    return NETWORK_NODES_BASE.map((node, index) => {
+      // 使用节点索引作为额外 seed，确保每个节点都有不同的随机数序列
+      const nodeRng = new SeededRandom(`${seedString}_${node.id}_${index}`);
+      return {
+        ...node,
+        memberCount: nodeRng.nextInt(100, 500) // 100-500 之间的确定性随机数
+      };
+    });
+  }, [chainId]); // 依赖 chainId，当链切换时重新生成
+  
+  // 生成确定性连线（基于节点）
+  const networkEdges = useMemo(() => {
+    return generateEdges(networkNodes);
+  }, [networkNodes]);
+  
   // 从 localStorage 加载保存的节点位置
   const loadSavedNodePositions = (): NetworkNode[] => {
     if (typeof window === 'undefined') return networkNodes;
@@ -282,7 +439,39 @@ export default function Home() {
     return networkNodes;
   };
 
-  const [nodes, setNodes] = useState<NetworkNode[]>(loadSavedNodePositions()); // 可编辑的节点数组
+  // 初始化节点：先使用基础数据，等 networkNodes 生成后再更新
+  const [nodes, setNodes] = useState<NetworkNode[]>(() => {
+    // SSR 时返回基础数据
+    if (typeof window === 'undefined') {
+      return NETWORK_NODES_BASE.map(node => ({ ...node, memberCount: 300 }));
+    }
+    // 客户端初始化时，先返回基础数据（不包含随机 memberCount）
+    // 真正的 networkNodes 会在 useMemo 中生成，然后通过 useEffect 更新
+    return NETWORK_NODES_BASE.map(node => ({ ...node, memberCount: 300 }));
+  });
+  
+  // 当 networkNodes 变化时，更新 nodes（但保留 localStorage 中的位置）
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('herweave_node_positions');
+      if (saved) {
+        try {
+          const savedPositions: Record<string, { x: number; y: number }> = JSON.parse(saved);
+          setNodes(networkNodes.map(node => {
+            const savedPos = savedPositions[node.id];
+            if (savedPos) {
+              return { ...node, x: savedPos.x, y: savedPos.y };
+            }
+            return node;
+          }));
+        } catch (error) {
+          setNodes(networkNodes);
+        }
+      } else {
+        setNodes(networkNodes);
+      }
+    }
+  }, [networkNodes]);
   
   // 保存节点位置到 localStorage
   const saveNodePositions = (updatedNodes: NetworkNode[]) => {
@@ -337,10 +526,14 @@ export default function Home() {
     };
   }, [showDisconnect]);
 
-  // 生成编织线程动画
+  // 生成编织线程动画（修复：使用确定性随机数）
   useEffect(() => {
     const points = defaultHotspots.map(h => ({ x: h.x, y: h.y }));
     if (points.length < 2) return;
+
+    // 使用固定 seed 生成确定性动画参数
+    const threadSeed = `threads_${CONTRACT_ADDRESS}`;
+    const rng = new SeededRandom(threadSeed);
 
     const newThreads: Thread[] = [];
     let threadId = 0;
@@ -356,15 +549,15 @@ export default function Home() {
             id: threadId++,
             from: points[i],
             to: points[targetIndex],
-            delay: Math.random() * 3,
-            duration: 2 + Math.random() * 2
+            delay: rng.next() * 3, // 确定性延迟
+            duration: 2 + rng.next() * 2 // 确定性持续时间
           });
         }
       }
     }
 
     setThreads(newThreads);
-  }, []);
+  }, []); // 只在组件挂载时执行一次
 
   // 处理 ESC 键关闭卡片
   useEffect(() => {
@@ -463,13 +656,15 @@ export default function Home() {
       console.log('📍 合约地址:', CONTRACT_ADDRESS);
       
       // 检查网络
+      const SEPOLIA_CHAIN_ID = 11155111;
+      const LOCAL_CHAIN_IDS = [31337, 1337];
+      
       let network;
       let chainId;
       try {
         network = await provider.getNetwork();
         chainId = Number(network.chainId);
-        const SEPOLIA_CHAIN_ID = 11155111;
-        const LOCAL_CHAIN_IDS = [31337, 1337];
+        
         const isCorrectNetwork = chainId === SEPOLIA_CHAIN_ID || LOCAL_CHAIN_IDS.includes(chainId);
         
         console.log('🌐 当前网络:', {
@@ -479,14 +674,28 @@ export default function Home() {
           isCorrectNetwork: isCorrectNetwork
         });
       } catch (networkError: any) {
-        console.error('❌ 获取网络信息失败:', networkError);
-        setContractDeployed(false);
-        return false;
+        // 处理网络切换错误（ethers.js v6 在网络切换时会抛出 NETWORK_ERROR）
+        if (networkError.code === 'NETWORK_ERROR' || networkError.message?.includes('network changed')) {
+          console.log('🔄 检测到网络切换，等待网络稳定后重试...');
+          // 等待网络稳定
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          try {
+            network = await provider.getNetwork();
+            chainId = Number(network.chainId);
+            console.log('✅ 网络切换完成，当前链 ID:', chainId);
+          } catch (retryError: any) {
+            console.warn('⚠️ 重试获取网络信息失败:', retryError);
+            setContractDeployed(false);
+            return false;
+          }
+        } else {
+          console.error('❌ 获取网络信息失败:', networkError);
+          setContractDeployed(false);
+          return false;
+        }
       }
       
       // 验证网络是否正确（支持 Sepolia 和本地链）
-      const SEPOLIA_CHAIN_ID = 11155111;
-      const LOCAL_CHAIN_IDS = [31337, 1337];
       const isCorrectNetwork = chainId === SEPOLIA_CHAIN_ID || LOCAL_CHAIN_IDS.includes(chainId);
       
       if (!isCorrectNetwork) {
@@ -501,9 +710,23 @@ export default function Home() {
       try {
         code = await provider.getCode(CONTRACT_ADDRESS);
       } catch (codeError: any) {
-        console.error('❌ 获取合约代码失败:', codeError);
-        setContractDeployed(false);
-        return false;
+        // 处理网络切换错误
+        if (codeError.code === 'NETWORK_ERROR' || codeError.message?.includes('network changed')) {
+          console.log('🔄 检测到网络切换，等待网络稳定后重试...');
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          try {
+            code = await provider.getCode(CONTRACT_ADDRESS);
+            console.log('✅ 重试获取合约代码成功');
+          } catch (retryError: any) {
+            console.warn('⚠️ 重试获取合约代码失败:', retryError);
+            setContractDeployed(false);
+            return false;
+          }
+        } else {
+          console.error('❌ 获取合约代码失败:', codeError);
+          setContractDeployed(false);
+          return false;
+        }
       }
       
       const codeLength = code?.length || 0;
@@ -752,7 +975,26 @@ export default function Home() {
       }
 
       // 再次确认合约已部署
-      const code = await provider.getCode(CONTRACT_ADDRESS);
+      let code;
+      try {
+        code = await provider.getCode(CONTRACT_ADDRESS);
+      } catch (codeError: any) {
+        // 处理网络切换错误
+        if (codeError.code === 'NETWORK_ERROR' || codeError.message?.includes('network changed')) {
+          console.log('🔄 检测到网络切换，等待网络稳定后重试...');
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          try {
+            code = await provider.getCode(CONTRACT_ADDRESS);
+          } catch (retryError: any) {
+            console.warn('⚠️ 重试获取合约代码失败，跳过加载用户信息:', retryError);
+            return;
+          }
+        } else {
+          console.warn('⚠️ 获取合约代码失败，跳过加载用户信息:', codeError);
+          return;
+        }
+      }
+      
       if (!code || code === '0x') {
         console.warn('合约未部署，跳过加载用户信息');
         setContractDeployed(false);
@@ -760,19 +1002,31 @@ export default function Home() {
       }
 
         try {
-          const userData = await contractInstance.getUser(address);
+          let userData;
+          try {
+            userData = await contractInstance.getUser(address);
+          } catch (callError: any) {
+            // 处理网络切换错误
+            if (callError.code === 'NETWORK_ERROR' || callError.message?.includes('network changed')) {
+              console.log('🔄 检测到网络切换，等待网络稳定后重试...');
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              userData = await contractInstance.getUser(address);
+            } else {
+              throw callError;
+            }
+          }
           
           // 检查返回的数据是否有效
           if (userData && userData.exists) {
-            // 处理credits字段（可能是BigNumber）
-            const credits = userData.credits ? Number(userData.credits) : 10;
+            // 处理wave字段（可能是BigNumber）
+            const wave = userData.wave ? Number(userData.wave) : 10;
             setUser({
               name: userData.name || '',
               location: userData.location || '',
               trustScore: Number(userData.trustScore) || 50,
               totalHelps: Number(userData.totalHelps) || 0,
               totalReceived: Number(userData.totalReceived) || 0,
-              credits: credits,
+              wave: wave,
               exists: true
             });
           } else {
@@ -784,7 +1038,7 @@ export default function Home() {
               trustScore: 50,
               totalHelps: 0,
               totalReceived: 0,
-              credits: 10,
+              wave: 10,
               exists: false
             });
           }
@@ -824,10 +1078,25 @@ export default function Home() {
         code = await provider.getCode(CONTRACT_ADDRESS);
         console.log('📄 合约代码检查:', code ? `有代码 (${code.length} 字符)` : '无代码');
       } catch (codeError: any) {
-        console.warn('⚠️ 获取合约代码失败:', codeError);
-        setContractDeployed(false);
-        setRequests([]);
-        return;
+        // 处理网络切换错误
+        if (codeError.code === 'NETWORK_ERROR' || codeError.message?.includes('network changed')) {
+          console.log('🔄 检测到网络切换，等待网络稳定后重试...');
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          try {
+            code = await provider.getCode(CONTRACT_ADDRESS);
+            console.log('✅ 重试获取合约代码成功');
+          } catch (retryError: any) {
+            console.warn('⚠️ 重试获取合约代码失败:', retryError);
+            setContractDeployed(false);
+            setRequests([]);
+            return;
+          }
+        } else {
+          console.warn('⚠️ 获取合约代码失败:', codeError);
+          setContractDeployed(false);
+          setRequests([]);
+          return;
+        }
       }
       
       if (!code || code === '0x') {
@@ -843,7 +1112,19 @@ export default function Home() {
       try {
         // 先检查请求总数
         console.log('📊 正在获取请求总数...');
-        const totalCount = await contractInstance.requestCount();
+        let totalCount;
+        try {
+          totalCount = await contractInstance.requestCount();
+        } catch (callError: any) {
+          // 处理网络切换错误
+          if (callError.code === 'NETWORK_ERROR' || callError.message?.includes('network changed')) {
+            console.log('🔄 检测到网络切换，等待网络稳定后重试...');
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            totalCount = await contractInstance.requestCount();
+          } else {
+            throw callError;
+          }
+        }
         const count = Number(totalCount);
         console.log('📊 当前请求总数:', count);
         
@@ -855,7 +1136,19 @@ export default function Home() {
 
         // 获取所有开放的请求
         console.log('📥 正在调用 getOpenRequests()...');
-        const openRequests = await contractInstance.getOpenRequests();
+        let openRequests;
+        try {
+          openRequests = await contractInstance.getOpenRequests();
+        } catch (callError: any) {
+          // 处理网络切换错误
+          if (callError.code === 'NETWORK_ERROR' || callError.message?.includes('network changed')) {
+            console.log('🔄 检测到网络切换，等待网络稳定后重试...');
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            openRequests = await contractInstance.getOpenRequests();
+          } else {
+            throw callError;
+          }
+        }
         console.log('📥 getOpenRequests() 返回:', openRequests);
         console.log('📥 数据类型:', typeof openRequests, '是否为数组:', Array.isArray(openRequests));
         console.log('📥 数组长度:', Array.isArray(openRequests) ? openRequests.length : 'N/A');
@@ -921,50 +1214,236 @@ export default function Home() {
 
   // 创建请求
   const createRequest = async () => {
-    if (!contract || !reqTitle || !reqDescription || !reqLocation) {
-      alert('请填写完整信息');
+    if (!reqTitle || !reqDescription || !reqLocation) {
+      setToastMessage('请填写完整信息');
+      setTimeout(() => setToastMessage(null), 3000);
       return;
     }
+    if (!account) {
+      setToastMessage('请先连接钱包');
+      setTimeout(() => setToastMessage(null), 3000);
+      return;
+    }
+    
     setLoading(true);
     try {
-      const tx = await contract.createRequest(reqTitle, reqDescription, reqLocation, reqHelpType);
-      await tx.wait();
+      // TODO: 未来对接合约
+      // if (contract) {
+      //   const tx = await contract.createRequest(reqTitle, reqDescription, reqLocation, reqHelpType);
+      //   await tx.wait();
+      // }
+      
+      // 本地状态：创建新请求
+      const newRequest: Request = {
+        id: Date.now(), // 临时 ID，未来使用链上 ID
+        requester: account,
+        title: reqTitle,
+        description: reqDescription,
+        location: reqLocation,
+        timestamp: Math.floor(Date.now() / 1000),
+        status: 0,
+        helper: '',
+        helpType: reqHelpType,
+        statusNew: 'OPEN',
+        createdAt: Date.now()
+      };
+      
+      setHelpState(prevState => {
+        const newState = {
+          ...prevState,
+          requests: [...prevState.requests, newRequest]
+        };
+        saveHelpState(newState);
+        return newState;
+      });
+      
       setReqTitle('');
       setReqDescription('');
       setReqLocation('');
       setReqHelpType(0);
-      await loadRequests(contract);
+      
+      // 如果合约已部署，也加载链上请求
+      if (contract) {
+        await loadRequests(contract);
+      }
+      
+      setToastMessage('✅ 请求发布成功！');
+      setTimeout(() => setToastMessage(null), 3000);
       setCurrentView('dashboard');
     } catch (error: any) {
       console.error('发布失败:', error);
-      alert('发布失败: ' + (error.message || '未知错误'));
+      setToastMessage('发布失败: ' + (error.message || '未知错误'));
+      setTimeout(() => setToastMessage(null), 3000);
     }
     setLoading(false);
   };
 
   // 接受请求
-  const acceptRequest = async (requestId: number) => {
-    if (!contract) return;
-    setLoading(true);
-    try {
-      const tx = await contract.acceptRequest(requestId);
-      await tx.wait();
-      // 重新加载用户信息以更新Credits
-      if (account) {
-        await loadUser(account, contract);
-      }
-      await loadRequests(contract);
-      alert(`已接受请求！获得 ${creditReward} Credits 奖励`);
-    } catch (error: any) {
-      console.error('接受请求失败:', error);
-      alert('接受失败: ' + (error.message || '未知错误'));
+  // ============================================
+  // 帮助流程核心函数
+  // ============================================
+  
+  // 接受帮助（点击"帮助"按钮）
+  const takeHelp = async (requestId: number, helperAddress: string) => {
+    if (!account || account.toLowerCase() !== helperAddress.toLowerCase()) {
+      setToastMessage('请先连接钱包');
+      setTimeout(() => setToastMessage(null), 3000);
+      return;
     }
-    setLoading(false);
+
+    setHelpState(prevState => {
+      const updatedRequests = [...prevState.requests];
+      const existingReq = updatedRequests.find(r => r.id === requestId);
+      
+      if (existingReq) {
+        const index = updatedRequests.indexOf(existingReq);
+        updatedRequests[index] = {
+          ...existingReq,
+          helper: helperAddress,
+          status: 1,
+          statusNew: 'IN_PROGRESS' as RequestStatus,
+          createdAt: existingReq.createdAt || existingReq.timestamp || Date.now()
+        };
+      } else {
+        // 从链上请求添加
+        const chainReq = requests.find(r => r.id === requestId);
+        if (chainReq) {
+          updatedRequests.push({
+            ...chainReq,
+            helper: helperAddress,
+            status: 1,
+            statusNew: 'IN_PROGRESS' as RequestStatus,
+            createdAt: chainReq.timestamp || Date.now()
+          });
+        }
+      }
+      
+      const newState = { ...prevState, requests: updatedRequests };
+      saveHelpState(newState);
+      return newState;
+    });
+
+    setToastMessage('✅ 已接单！请求已移至个人中心');
+    setTimeout(() => setToastMessage(null), 3000);
+
+    // TODO: 未来对接合约
+    // try {
+    //   const tx = await contract.acceptRequest(requestId);
+    //   await tx.wait();
+    // } catch (error) {
+    //   console.error('链上接受请求失败:', error);
+    // }
+  };
+
+  // 确认帮助完成
+  const confirmHelpCompleted = async (requestId: number, requesterAddress: string) => {
+    if (!account || account.toLowerCase() !== requesterAddress.toLowerCase()) {
+      setToastMessage('只有求助者可以确认完成');
+      setTimeout(() => setToastMessage(null), 3000);
+      return;
+    }
+
+    setHelpState(prevState => {
+      const request = prevState.requests.find(r => r.id === requestId);
+      if (!request || request.waveRewarded) {
+        return prevState;
+      }
+
+      const helperAddress = request.helper;
+      if (!helperAddress) return prevState;
+
+      const updatedRequests = prevState.requests.map(req => {
+        if (req.id === requestId) {
+          return {
+            ...req,
+            status: 2,
+            statusNew: 'COMPLETED' as RequestStatus,
+            nftMinted: true,
+            waveRewarded: true
+          };
+        }
+        return req;
+      });
+
+      const updatedProfiles = { ...prevState.profiles };
+      if (!updatedProfiles[helperAddress]) {
+        updatedProfiles[helperAddress] = { address: helperAddress, wave: 0 };
+        }
+      updatedProfiles[helperAddress].wave += 1;
+
+      const newState = { requests: updatedRequests, profiles: updatedProfiles };
+      saveHelpState(newState);
+      return newState;
+    });
+
+    setToastMessage('✅ 已完成！帮助者获得 +1 Wave');
+    setTimeout(() => setToastMessage(null), 3000);
+
+    // TODO: 未来对接合约
+    // try {
+    //   const tx = await contract.completeRequest(requestId);
+    //   await tx.wait();
+    // } catch (error) {
+    //   console.error('链上确认完成失败:', error);
+    // }
+  };
+
+  // 获取互助广场的请求（只显示 OPEN 状态）
+  const getRequestsForSquare = (): Request[] => {
+    const allRequests = [...requests];
+    helpState.requests.forEach(localReq => {
+      if (!allRequests.find(r => r.id === localReq.id)) {
+        allRequests.push(localReq);
+      }
+    });
+
+    return allRequests.filter(req => {
+      const status = req.statusNew || (req.status === 0 ? 'OPEN' : req.status === 1 ? 'IN_PROGRESS' : 'COMPLETED');
+      return status === 'OPEN';
+    });
+  };
+
+  // 获取个人中心的请求
+  const getRequestsForProfile = (address: string) => {
+    const allRequests = [...requests, ...helpState.requests];
+    const uniqueRequests = Array.from(new Map(allRequests.map(req => [req.id, req])).values());
+
+    return {
+      myRequests: uniqueRequests.filter(req => 
+        req.requester.toLowerCase() === address.toLowerCase()
+      ),
+      helpingInProgress: uniqueRequests.filter(req => 
+        req.helper.toLowerCase() === address.toLowerCase() && 
+        (req.statusNew === 'IN_PROGRESS' || req.status === 1)
+      ),
+      helpingCompleted: uniqueRequests.filter(req => 
+        req.helper.toLowerCase() === address.toLowerCase() && 
+        (req.statusNew === 'COMPLETED' || req.status === 2)
+      )
+    };
+  };
+
+  // 获取用户 wave
+  const getUserWave = (address: string): number => {
+    const chainWave = user?.wave || 0;
+    const localProfile = helpState.profiles[address];
+    const localWave = localProfile?.wave || 0;
+    return chainWave + localWave;
+  };
+
+  // 保留原有的 acceptRequest（兼容性，调用新的 takeHelp）
+  const acceptRequest = async (requestId: number) => {
+    if (!account) {
+      setToastMessage('请先连接钱包');
+      setTimeout(() => setToastMessage(null), 3000);
+      return;
+    }
+    await takeHelp(requestId, account);
   };
 
   const helpTypes = ['机场/车站接送', '一日游导览', '沙发客住宿'];
-  const creditCosts = [2, 5, 3]; // 对应helpTypes的Credits消耗
-  const creditReward = 1; // 接受任务获得的Credits
+  const waveCosts = [2, 5, 3]; // 对应helpTypes的Wave消耗
+  const waveReward = 1; // 接受任务获得的Wave
 
   return (
     <div className="min-h-screen" style={{ background: '#F5F1E8' }}>
@@ -1462,41 +1941,38 @@ export default function Home() {
                       style={{ 
                         fontSize: '16px',
                         padding: '14px 40px',
-                        color: '#A05A48',
+                        color: '#FFFFFF',
                         fontWeight: '500',
                         pointerEvents: 'none',
-                        userSelect: 'none'
+                        userSelect: 'none',
+                        border: '2px solid #C4715E',
+                        borderRadius: '50px',
+                        display: 'inline-block',
+                        background: '#C4715E'
                       }}
                     >
                       开始你的旅程
                     </div>
                   </div>
                 ) : (
-                  <div className="pt-2 flex gap-4 flex-wrap">
-                    <button
-                      onClick={() => {
-                        setCurrentView('requests');
-                        if (contract) loadRequests(contract);
-                      }}
-                      className="btn-primary text-base px-8 py-3.5"
+                  <div className="pt-2">
+                    <div
+                      className="text-base px-8 py-3.5"
                       style={{ 
                         fontSize: '16px',
                         padding: '14px 40px',
-                        boxShadow: '0 6px 20px rgba(196, 113, 94, 0.4)'
+                        color: '#FFFFFF',
+                        fontWeight: '500',
+                        pointerEvents: 'none',
+                        userSelect: 'none',
+                        border: '2px solid #C4715E',
+                        borderRadius: '50px',
+                        display: 'inline-block',
+                        background: '#C4715E'
                       }}
                     >
-                      查看请求
-                    </button>
-                    <button
-                      onClick={() => setCurrentView('create')}
-                      className="btn-secondary text-base px-8 py-3.5"
-                      style={{ 
-                        fontSize: '16px',
-                        padding: '14px 40px'
-                      }}
-                    >
-                      发布请求
-                    </button>
+                      开始你的旅程
+                    </div>
                   </div>
                 )}
 
@@ -1877,35 +2353,73 @@ export default function Home() {
               </div>
             </div>
 
-            {requests.length === 0 ? (
-              <p className="text-body text-center mb-12" style={{ color: '#8A8A8A' }}>暂无</p>
-            ) : (
-              <div className="grid md:grid-cols-2 gap-4 mb-12">
-                {requests.map((req) => (
-                  <div key={req.id} className="card">
-                    <div className="flex justify-between items-start mb-2">
-                      <h4 className="text-h3" style={{ color: '#2C2C2C' }}>{req.title}</h4>
-                      <span className="px-2 py-1 rounded-full text-sm font-medium" style={{ background: '#E8D5D5', color: '#A05A48' }}>
-                        {helpTypes[req.helpType]}
-                      </span>
-                    </div>
-                    <p className="text-body mb-3 line-clamp-2" style={{ color: '#5A5A5A' }}>{req.description}</p>
-                    <div className="flex items-center text-caption mb-3" style={{ color: '#8A8A8A' }}>
-                      <span>📍 {req.location}</span>
-                    </div>
-                    {req.requester.toLowerCase() !== account?.toLowerCase() && (
-                      <button
-                        onClick={() => acceptRequest(req.id)}
-                        disabled={loading}
-                        className="btn-primary disabled:opacity-50 w-full"
-                      >
-                        {loading ? '处理中...' : '提供帮助'}
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
+            {(() => {
+              const squareRequests = getRequestsForSquare();
+              return squareRequests.length === 0 ? (
+                <p className="text-body text-center mb-12" style={{ color: '#8A8A8A' }}>暂无</p>
+              ) : (
+                <div className="grid md:grid-cols-2 gap-4 mb-12">
+                  {squareRequests.map((req) => {
+                    const status = req.statusNew || (req.status === 0 ? 'OPEN' : req.status === 1 ? 'IN_PROGRESS' : 'COMPLETED');
+                    const isRequester = account && req.requester.toLowerCase() === account.toLowerCase();
+                    const isHelper = account && req.helper && req.helper.toLowerCase() === account.toLowerCase();
+                    
+                    return (
+                      <div key={req.id} className="card relative">
+                        
+                        <div className="flex justify-between items-start mb-2">
+                          <h4 className="text-h3" style={{ color: '#2C2C2C' }}>{req.title}</h4>
+                          <span className="px-2 py-1 rounded-full text-sm font-medium" style={{ background: '#E8D5D5', color: '#A05A48' }}>
+                            {helpTypes[req.helpType]}
+                          </span>
+                        </div>
+                        <p className="text-body mb-3 line-clamp-2" style={{ color: '#5A5A5A' }}>{req.description}</p>
+                        <div className="flex items-center text-caption mb-3" style={{ color: '#8A8A8A' }}>
+                          <span>📍 {req.location}</span>
+                        </div>
+                        
+                        {/* 按钮逻辑 */}
+                        {status === 'OPEN' && !isRequester && (
+                          <button
+                            onClick={() => account ? takeHelp(req.id, account) : setToastMessage('请先连接钱包')}
+                            disabled={!account || loading}
+                            className="btn-primary disabled:opacity-50 w-full"
+                          >
+                            {loading ? '处理中...' : '帮助'}
+                          </button>
+                        )}
+                        {status === 'IN_PROGRESS' && (
+                          <div className="space-y-2">
+                            <button
+                              disabled
+                              className="btn-secondary w-full opacity-60"
+                            >
+                              进行中
+                            </button>
+                            {isRequester && (
+                              <button
+                                onClick={() => confirmHelpCompleted(req.id, req.requester)}
+                                className="btn-primary w-full"
+                              >
+                                已被成功帮助
+                              </button>
+                            )}
+                          </div>
+                        )}
+                        {status === 'COMPLETED' && (
+                          <button
+                            disabled
+                            className="btn-secondary w-full opacity-60"
+                          >
+                            已完成
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
 
             {/* 互助任务部分 */}
             <div className="relative w-full py-16 px-6 md:px-12 lg:px-20" style={{ background: '#F5F1E8', marginTop: '3rem' }}>
@@ -1964,7 +2478,7 @@ export default function Home() {
                         className="px-3 py-1 rounded-full text-xs font-medium"
                         style={{ background: '#E8D5D5', color: '#A05A48' }}
                       >
-                        消耗 3 Credits
+                        消耗 3 Wave
                       </div>
                       <span 
                         className="text-xs"
@@ -2027,7 +2541,7 @@ export default function Home() {
                         className="px-3 py-1 rounded-full text-xs font-medium"
                         style={{ background: '#E8D5D5', color: '#A05A48' }}
                       >
-                        消耗 5 Credits
+                        消耗 5 Wave
                       </div>
                       <span 
                         className="text-xs"
@@ -2093,7 +2607,7 @@ export default function Home() {
                         className="px-3 py-1 rounded-full text-xs font-medium"
                         style={{ background: '#E8D5D5', color: '#A05A48' }}
                       >
-                        消耗 2 Credits
+                        消耗 2 Wave
                       </div>
                       <span 
                         className="text-xs"
@@ -2205,15 +2719,15 @@ export default function Home() {
                   >
                     {helpTypes.map((type, idx) => (
                       <option key={idx} value={idx}>
-                        {type} (消耗 {creditCosts[idx]} Credits)
+                        {type} (消耗 {waveCosts[idx]} Wave)
                       </option>
                     ))}
                   </select>
                   {user && (
                     <p className="text-caption mt-2" style={{ color: '#8A8A8A' }}>
-                      当前Credits余额: <span style={{ color: user.credits >= creditCosts[reqHelpType] ? '#C4715E' : '#A05A48', fontWeight: 'bold' }}>
-                        {user.credits}
-                      </span> / 需要 {creditCosts[reqHelpType]} Credits
+                      当前Wave余额: <span style={{ color: user.wave >= waveCosts[reqHelpType] ? '#C4715E' : '#A05A48', fontWeight: 'bold' }}>
+                        {user.wave}
+                      </span> / 需要 {waveCosts[reqHelpType]} Wave
                     </p>
                   )}
         </div>
@@ -2229,54 +2743,150 @@ export default function Home() {
           </div>
         ) : currentView === 'profile' ? (
           // 个人中心
-          <div className="max-w-2xl mx-auto">
-            <h2 className="text-h1 mb-6" style={{ color: '#2C2C2C' }}>个人中心</h2>
-            <div className="card p-8">
-              <div className="text-center mb-6">
-                <div className="w-24 h-24 rounded-full mx-auto mb-4 flex items-center justify-center text-4xl font-medium text-white" style={{ background: '#C4715E' }}>
-                  {user?.name ? user.name.charAt(0).toUpperCase() : account?.charAt(2).toUpperCase() || '?'}
-                </div>
-                <h3 className="text-h2" style={{ color: '#2C2C2C' }}>
-                  {user?.name || '旅行者'}
-                </h3>
-                {user?.location && (
-                  <p className="text-body mt-2" style={{ color: '#5A5A5A' }}>📍 {user.location}</p>
-                )}
-              </div>
+          account ? (() => {
+            const profileRequests = getRequestsForProfile(account);
+            const userWave = getUserWave(account);
+            
+            // 渲染请求卡片的辅助函数
+            const renderRequestCard = (req: Request) => {
+              const status = req.statusNew || (req.status === 0 ? 'OPEN' : req.status === 1 ? 'IN_PROGRESS' : 'COMPLETED');
+              const isRequester = req.requester.toLowerCase() === account.toLowerCase();
               
-              <div className="grid grid-cols-4 gap-4 mb-6">
-                <div className="text-center p-4 rounded-lg" style={{ background: '#E8D5D5' }}>
-                  <div className="text-2xl font-bold" style={{ color: '#C4715E' }}>
-                    {user?.credits ?? 10}
+              return (
+                <div key={req.id} className="card relative">
+                  
+                  <div className="flex justify-between items-start mb-2">
+                    <h4 className="text-h3" style={{ color: '#2C2C2C' }}>{req.title}</h4>
+                    <span className="px-2 py-1 rounded-full text-sm font-medium" style={{ background: '#E8D5D5', color: '#A05A48' }}>
+                      {helpTypes[req.helpType]}
+                    </span>
                   </div>
-                  <div className="text-caption mt-1" style={{ color: '#5A5A5A' }}>Credits</div>
+                  <p className="text-body mb-3" style={{ color: '#5A5A5A' }}>{req.description}</p>
+                  <div className="flex items-center text-caption mb-3" style={{ color: '#8A8A8A' }}>
+                    <span>📍 {req.location}</span>
+                  </div>
+                  
+                  {/* 状态标签 */}
+                  <div className="mb-3">
+                    {status === 'OPEN' && (
+                      <span className="px-2 py-1 rounded text-xs" style={{ background: '#E8D5D5', color: '#A05A48' }}>开放中</span>
+                    )}
+                    {status === 'IN_PROGRESS' && (
+                      <span className="px-2 py-1 rounded text-xs" style={{ background: '#FFF4E6', color: '#C4715E' }}>进行中</span>
+                    )}
+                    {status === 'COMPLETED' && (
+                      <span className="px-2 py-1 rounded text-xs" style={{ background: '#E8F5E9', color: '#4CAF50' }}>已结束</span>
+                    )}
+                  </div>
+                  
+                  {/* 按钮 */}
+                  {status === 'OPEN' && isRequester && (
+                    <button disabled className="btn-secondary w-full opacity-60">等待帮助</button>
+                  )}
+                  {status === 'IN_PROGRESS' && (
+                    <div className="space-y-2">
+                      <button disabled className="btn-secondary w-full opacity-60">进行中</button>
+                      {isRequester && (
+                        <button
+                          onClick={() => confirmHelpCompleted(req.id, req.requester)}
+                          className="btn-primary w-full"
+                        >
+                          已被成功帮助
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {status === 'COMPLETED' && (
+                    <button disabled className="btn-secondary w-full opacity-60">已结束</button>
+                  )}
                 </div>
-                <div className="text-center p-4 rounded-lg" style={{ background: '#E8D5D5' }}>
-                  <div className="text-2xl font-bold" style={{ color: '#C4715E' }}>
-                    {user?.trustScore || 50}
+              );
+            };
+            
+            return (
+              <div className="max-w-4xl mx-auto">
+                <h2 className="text-h1 mb-6" style={{ color: '#2C2C2C' }}>个人中心</h2>
+                
+                {/* 用户信息卡片 */}
+                <div className="card p-8 mb-6">
+                  <div className="text-center mb-6">
+                    <div className="w-24 h-24 rounded-full mx-auto mb-4 flex items-center justify-center text-4xl font-medium text-white" style={{ background: '#C4715E' }}>
+                      {user?.name ? user.name.charAt(0).toUpperCase() : account?.charAt(2).toUpperCase() || '?'}
+                    </div>
+                    <h3 className="text-h2" style={{ color: '#2C2C2C' }}>
+                      {user?.name || '旅行者'}
+                    </h3>
+                    {user?.location && (
+                      <p className="text-body mt-2" style={{ color: '#5A5A5A' }}>📍 {user.location}</p>
+                    )}
                   </div>
-                  <div className="text-caption mt-1" style={{ color: '#5A5A5A' }}>信任评分</div>
+                  
+                  <div className="grid grid-cols-4 gap-4 mb-6">
+                    <div className="text-center p-4 rounded-lg" style={{ background: '#E8D5D5' }}>
+                      <div className="text-2xl font-bold" style={{ color: '#C4715E' }}>
+                        {userWave}
+                      </div>
+                      <div className="text-caption mt-1" style={{ color: '#5A5A5A' }}>Wave</div>
+                    </div>
+                    <div className="text-center p-4 rounded-lg" style={{ background: '#E8D5D5' }}>
+                      <div className="text-2xl font-bold" style={{ color: '#C4715E' }}>
+                        {user?.trustScore || 50}
+                      </div>
+                      <div className="text-caption mt-1" style={{ color: '#5A5A5A' }}>信任评分</div>
+                    </div>
+                    <div className="text-center p-4 rounded-lg" style={{ background: '#E8D5D5' }}>
+                      <div className="text-2xl font-bold" style={{ color: '#C4715E' }}>
+                        {user?.totalHelps || 0}
+                      </div>
+                      <div className="text-caption mt-1" style={{ color: '#5A5A5A' }}>提供帮助</div>
+                    </div>
+                    <div className="text-center p-4 rounded-lg" style={{ background: '#E8D5D5' }}>
+                      <div className="text-2xl font-bold" style={{ color: '#C4715E' }}>
+                        {user?.totalReceived || 0}
+                      </div>
+                      <div className="text-caption mt-1" style={{ color: '#5A5A5A' }}>接受帮助</div>
+                    </div>
+                  </div>
+
+                  <div className="border-t pt-6" style={{ borderColor: '#E8D5D5' }}>
+                    <h4 className="text-h3 mb-2" style={{ color: '#2C2C2C' }}>钱包地址</h4>
+                    <p className="text-caption font-mono" style={{ color: '#8A8A8A' }}>{account}</p>
+                  </div>
                 </div>
-                <div className="text-center p-4 rounded-lg" style={{ background: '#E8D5D5' }}>
-                  <div className="text-2xl font-bold" style={{ color: '#C4715E' }}>
-                    {user?.totalHelps || 0}
-                  </div>
-                  <div className="text-caption mt-1" style={{ color: '#5A5A5A' }}>提供帮助</div>
-                </div>
-                <div className="text-center p-4 rounded-lg" style={{ background: '#E8D5D5' }}>
-                  <div className="text-2xl font-bold" style={{ color: '#C4715E' }}>
-                    {user?.totalReceived || 0}
-                  </div>
-                  <div className="text-caption mt-1" style={{ color: '#5A5A5A' }}>接受帮助</div>
+                
+                {/* 所有活动卡片 - 合并显示 */}
+                <div className="mb-6">
+                  <h3 className="text-h2 mb-4" style={{ color: '#2C2C2C' }}>我的活动</h3>
+                  {(() => {
+                    // 合并所有请求：我发起的 + 我帮助中的 + 我帮助完成的（全部显示为完整卡片）
+                    const allRequests = [
+                      ...profileRequests.myRequests,
+                      ...profileRequests.helpingInProgress,
+                      ...profileRequests.helpingCompleted
+                    ];
+                    
+                    if (allRequests.length === 0) {
+                      return (
+                        <p className="text-body text-center py-8" style={{ color: '#8A8A8A' }}>暂无活动</p>
+                      );
+                    }
+                    
+                    return (
+                      <div className="flex flex-wrap gap-4 items-start">
+                        {allRequests.map(renderRequestCard)}
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
-
-              <div className="border-t pt-6" style={{ borderColor: '#E8D5D5' }}>
-                <h4 className="text-h3 mb-2" style={{ color: '#2C2C2C' }}>钱包地址</h4>
-                <p className="text-caption font-mono" style={{ color: '#8A8A8A' }}>{account}</p>
+            );
+          })() : (
+            <div className="max-w-2xl mx-auto">
+              <div className="card p-8 text-center">
+                <p className="text-body" style={{ color: '#5A5A5A' }}>请先连接钱包查看个人中心</p>
               </div>
             </div>
-        </div>
+          )
         ) : null}
       </main>
 
@@ -2319,6 +2929,23 @@ export default function Home() {
           loop
           style={{ display: 'none' }}
         />
+      )}
+      
+      {/* Toast 提示 */}
+      {toastMessage && (
+        <div
+          className="fixed top-20 left-1/2 transform -translate-x-1/2 z-50 px-6 py-3 rounded-lg shadow-lg animate-in fade-in slide-in-from-top-2"
+          style={{
+            background: '#C4715E',
+            color: '#FFFFFF',
+            minWidth: '200px',
+            textAlign: 'center',
+            fontSize: '14px',
+            fontWeight: '500'
+          }}
+        >
+          {toastMessage}
+        </div>
       )}
     </div>
   );
