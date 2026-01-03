@@ -1,4 +1,4 @@
-# HerWeave (Herstory-Group Project) 🚶‍♀️‍➡️🌍🚶‍♀️  
+# HerWeave 🚶‍♀️‍➡️🌍🚶‍♀️  
 **HerWeave: Her Weave, Your World.**  
 女性旅行互助任务板 · 安全互助 · Weave Credits（织点）· 链上可验证声誉
 
