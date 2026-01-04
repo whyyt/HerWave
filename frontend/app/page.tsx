@@ -37,7 +37,7 @@ const CONTRACT_ABI = [
 ];
 
 // 合约地址（每次重新部署后需要更新）
-const CONTRACT_ADDRESS = "0x148494D47109e5f3003b237701a5aF867035d731"; // Sepolia 测试网
+const CONTRACT_ADDRESS = "0xDfb4Dd5551902ed8EDdb84CFa7bD9822799290a2"; // Sepolia 测试网
 
 // Sepolia 测试网配置
 const SEPOLIA_CHAIN_CONFIG = {
@@ -1358,20 +1358,33 @@ export default function Home() {
             
             // 保留当前用户状态中可能已经更新的统计数字（如果存在）
             // 这样可以避免在 confirmHelpCompleted 后重新加载时覆盖更新
-            const currentTotalHelps = user?.totalHelps ?? 0;
-            const currentTotalReceived = user?.totalReceived ?? 0;
+            // 只有当加载的是当前用户的信息时，才需要合并更新
+            const isCurrentUser = address.toLowerCase() === account?.toLowerCase();
+            const currentTotalHelps = (isCurrentUser && user) ? (user.totalHelps ?? 0) : 0;
+            const currentTotalReceived = (isCurrentUser && user) ? (user.totalReceived ?? 0) : 0;
             
-            setUser({
-              name: userData.name || '',
-              location: userData.location || '',
-              trustScore: Number(userData.trustScore) || 50,
-              // 如果当前状态中的统计数字更大，说明已经更新过，保留更新后的值
-              totalHelps: Math.max(Number(userData.totalHelps) || 0, currentTotalHelps),
-              totalReceived: Math.max(Number(userData.totalReceived) || 0, currentTotalReceived),
-              // wave 使用计算后的值
-              wave: wave,
-              exists: true
-            });
+            // 如果加载的是当前用户的信息，使用 Math.max 合并更新
+            // 如果加载的是其他用户的信息，直接使用链上的值
+            const finalTotalHelps = isCurrentUser 
+              ? Math.max(Number(userData.totalHelps) || 0, currentTotalHelps)
+              : (Number(userData.totalHelps) || 0);
+            const finalTotalReceived = isCurrentUser
+              ? Math.max(Number(userData.totalReceived) || 0, currentTotalReceived)
+              : (Number(userData.totalReceived) || 0);
+            
+            // 只有当加载的是当前用户的信息时，才更新 user 状态
+            if (isCurrentUser) {
+              setUser({
+                name: userData.name || '',
+                location: userData.location || '',
+                trustScore: Number(userData.trustScore) || 50,
+                totalHelps: finalTotalHelps,
+                totalReceived: finalTotalReceived,
+                // wave 使用计算后的值
+                wave: wave,
+                exists: true
+              });
+            }
             
             // 确保本地状态中也有10个wave（如果链上为0且本地也没有）
             if (chainWave === 0 && (!localProfile || localProfile.wave === 0 || localProfile.wave === undefined)) {
@@ -1898,6 +1911,10 @@ export default function Home() {
     });
 
     // 更新用户的 totalReceived（被帮助者）和 totalHelps（帮助者）
+    // 保存更新前的值，用于合并更新
+    const previousRequesterTotalReceived = user?.totalReceived || 0;
+    const previousHelperTotalHelps = user?.totalHelps || 0;
+    
     // 被帮助者（requesterAddress）的 totalReceived +1
     // 如果被帮助者是当前用户，立即更新前端状态
     if (user && account.toLowerCase() === requesterAddress.toLowerCase()) {
@@ -1921,25 +1938,27 @@ export default function Home() {
           });
         }
       }
+    }
+    
+    // 从链上重新加载当前用户的信息，确保统计数据正确更新
+    // 只有当受助者或帮助者是当前用户时，才需要重新加载
+    // 使用延迟执行，确保前端状态更新完成
+    if (contract && account) {
+      const isRequesterCurrentUser = requesterAddress.toLowerCase() === account.toLowerCase();
+      const isHelperCurrentUser = helperAddress.toLowerCase() === account.toLowerCase();
       
-      // 无论帮助者是否是当前用户，都需要从链上重新加载帮助者的用户信息
-      // 这样确保帮助者的帮助次数能够正确更新（如果帮助者是当前用户，会合并更新）
-      if (contract && helperAddress) {
+      // 如果受助者或帮助者是当前用户，重新加载当前用户信息
+      if (isRequesterCurrentUser || isHelperCurrentUser) {
         setTimeout(async () => {
           try {
-            await loadUser(helperAddress, contract);
-            console.log('✅ 帮助者用户信息已更新');
+            await loadUser(account, contract);
+            console.log('✅ 当前用户信息已更新（包含受助/帮助统计）');
           } catch (error) {
-            console.warn('⚠️ 加载帮助者用户信息失败:', error);
+            console.warn('⚠️ 加载当前用户信息失败:', error);
           }
         }, 500);
       }
     }
-    
-    // 注意：由于链上数据可能还没有更新（因为还没有调用合约），
-    // 我们不应该立即重新加载当前用户信息，否则会覆盖掉前端的更新
-    // 只有在链上数据确实更新后，才重新加载
-    // TODO: 未来对接合约后，在链上数据更新完成后再重新加载
 
     setToastMessage('✅ 已完成！受帮助次数和帮助次数已更新，帮助者获得 +1 Wave');
     setTimeout(() => setToastMessage(null), 3000);
