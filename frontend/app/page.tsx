@@ -37,7 +37,7 @@ const CONTRACT_ABI = [
 ];
 
 // 合约地址（每次重新部署后需要更新）
-const CONTRACT_ADDRESS = "0x96EA6c0bC52694154061cCc3249d29717413d6c8"; // Sepolia 测试网
+const CONTRACT_ADDRESS = "0x65B7F317f4D44C4dC9b57431CF1e78394eb8E11b"; // Sepolia 测试网
 
 // Sepolia 测试网配置
 const SEPOLIA_CHAIN_CONFIG = {
@@ -345,6 +345,7 @@ export default function Home() {
   const [selectedNode, setSelectedNode] = useState<NetworkNode | null>(null);
   const [cardPosition, setCardPosition] = useState<{ x: number; y: number } | null>(null);
   const networkContainerRef = useRef<HTMLDivElement>(null);
+  const [mapImageLoaded, setMapImageLoaded] = useState(false);
   
   // 节点拖拽状态（互助广场）
   const [draggingNode, setDraggingNode] = useState<string | null>(null);
@@ -1193,6 +1194,30 @@ export default function Home() {
       // 无论合约是否部署，都尝试加载数据
       console.log('📥 开始加载数据...');
       
+      // 每次连接钱包时，确保该地址默认有10个wave
+      setHelpState(prevState => {
+        const updatedProfiles = { ...prevState.profiles };
+        const address = accounts[0].toLowerCase();
+        const currentProfile = updatedProfiles[address];
+        const currentWave = currentProfile?.wave || 0;
+        
+        // 如果该地址没有记录，或者wave小于10，则设置为10
+        if (!currentProfile || currentWave < 10) {
+          updatedProfiles[address] = {
+            address: accounts[0],
+            wave: 10
+          };
+        }
+        
+        const newState = {
+          ...prevState,
+          profiles: updatedProfiles
+        };
+        // 保存到 localStorage
+        saveHelpState(newState);
+        return newState;
+      });
+      
       // 加载用户信息
       if (deployed) {
         try {
@@ -1201,6 +1226,17 @@ export default function Home() {
         } catch (error) {
           console.warn('⚠️ 加载用户信息失败:', error);
         }
+      } else {
+        // 如果合约未部署，也设置默认wave
+        setUser({
+          name: '',
+          location: '',
+          trustScore: 50,
+          totalHelps: 0,
+          totalReceived: 0,
+          wave: 10,
+          exists: false
+        });
       }
       
       // 加载请求列表（无论合约是否部署都尝试）
@@ -1297,12 +1333,17 @@ export default function Home() {
           // 检查返回的数据是否有效
           if (userData && userData.exists) {
             // 处理wave字段（可能是BigNumber）
-            const wave = userData.wave ? Number(userData.wave) : 10;
+            // 如果链上wave为0或不存在，使用本地状态，否则使用链上的值
+            const chainWave = userData.wave ? Number(userData.wave) : 0;
+            const localProfile = helpState.profiles[address.toLowerCase()];
+            const localWave = localProfile?.wave || 0;
+            // 如果链上wave为0且本地也没有，则默认10
+            const wave = chainWave > 0 ? chainWave : (localWave > 0 ? localWave : 10);
+            
             // 保留当前用户状态中可能已经更新的统计数字（如果存在）
             // 这样可以避免在 confirmHelpCompleted 后重新加载时覆盖更新
             const currentTotalHelps = user?.totalHelps ?? 0;
             const currentTotalReceived = user?.totalReceived ?? 0;
-            const currentWave = user?.wave ?? 0;
             
             setUser({
               name: userData.name || '',
@@ -1311,10 +1352,25 @@ export default function Home() {
               // 如果当前状态中的统计数字更大，说明已经更新过，保留更新后的值
               totalHelps: Math.max(Number(userData.totalHelps) || 0, currentTotalHelps),
               totalReceived: Math.max(Number(userData.totalReceived) || 0, currentTotalReceived),
-              // wave 使用链上的值，但会通过 getUserWave 函数结合本地调整
+              // wave 使用计算后的值
               wave: wave,
               exists: true
             });
+            
+            // 确保本地状态中也有10个wave（如果链上为0且本地也没有）
+            if (chainWave === 0 && (!localProfile || localProfile.wave === 0 || localProfile.wave === undefined)) {
+              setHelpState(prevState => {
+                const updatedProfiles = { ...prevState.profiles };
+                updatedProfiles[address.toLowerCase()] = {
+                  address: address,
+                  wave: 10
+                };
+                return {
+                  ...prevState,
+                  profiles: updatedProfiles
+                };
+              });
+            }
           } else {
             // 用户未注册，这是正常情况，设置默认值
             console.log('用户未注册，使用默认值');
@@ -2643,41 +2699,44 @@ export default function Home() {
                     </linearGradient>
                   </defs>
 
-                  {/* 连接线 */}
-                  <g className="network-edges">
-                    {networkEdges.map((edge, idx) => {
-                      const fromNode = nodes.find(n => n.id === edge.from);
-                      const toNode = nodes.find(n => n.id === edge.to);
-                      if (!fromNode || !toNode) return null;
-                      
-                      // 将百分比坐标转换为 viewBox 坐标 (0-100 -> 0-1000, 0-500)
-                      const fromX = (fromNode.x / 100) * 1000;
-                      const fromY = (fromNode.y / 100) * 500;
-                      const toX = (toNode.x / 100) * 1000;
-                      const toY = (toNode.y / 100) * 500;
-                      
-                      const isSelected = selectedNode && (selectedNode.id === fromNode.id || selectedNode.id === toNode.id);
-                      
-                      return (
-                        <line
-                          key={`${edge.from}-${edge.to}-${idx}`}
-                          x1={fromX}
-                          y1={fromY}
-                          x2={toX}
-                          y2={toY}
-                          stroke={isSelected ? '#C53030' : 'url(#edgeGradient)'}
-                          strokeWidth={isSelected ? '2.5' : '1.5'}
-                          strokeDasharray="4 3"
-                          opacity={isSelected ? LINE_OPACITY_SELECTED : LINE_OPACITY}
-                          style={{ transition: 'all 0.3s ease' }}
-                        />
-                      );
-                    })}
-                  </g>
+                  {/* 连接线和节点 - 只在map.png加载完成后显示 */}
+                  {mapImageLoaded && (
+                    <>
+                      {/* 连接线 */}
+                      <g className="network-edges">
+                        {networkEdges.map((edge, idx) => {
+                          const fromNode = nodes.find(n => n.id === edge.from);
+                          const toNode = nodes.find(n => n.id === edge.to);
+                          if (!fromNode || !toNode) return null;
+                          
+                          // 将百分比坐标转换为 viewBox 坐标 (0-100 -> 0-1000, 0-500)
+                          const fromX = (fromNode.x / 100) * 1000;
+                          const fromY = (fromNode.y / 100) * 500;
+                          const toX = (toNode.x / 100) * 1000;
+                          const toY = (toNode.y / 100) * 500;
+                          
+                          const isSelected = selectedNode && (selectedNode.id === fromNode.id || selectedNode.id === toNode.id);
+                          
+                          return (
+                            <line
+                              key={`${edge.from}-${edge.to}-${idx}`}
+                              x1={fromX}
+                              y1={fromY}
+                              x2={toX}
+                              y2={toY}
+                              stroke={isSelected ? '#C53030' : 'url(#edgeGradient)'}
+                              strokeWidth={isSelected ? '2.5' : '1.5'}
+                              strokeDasharray="4 3"
+                              opacity={isSelected ? LINE_OPACITY_SELECTED : LINE_OPACITY}
+                              style={{ transition: 'all 0.3s ease' }}
+                            />
+                          );
+                        })}
+                      </g>
 
-                  {/* 节点 */}
-                  <g className="network-nodes">
-                    {nodes.map((node) => {
+                      {/* 节点 */}
+                      <g className="network-nodes">
+                      {nodes.map((node) => {
                       const isSelected = selectedNode?.id === node.id;
                       const isConnected = selectedNode && networkEdges.some(
                         e => (e.from === node.id && e.to === selectedNode.id) || 
@@ -2789,9 +2848,11 @@ export default function Home() {
                             }}
                           />
                         </g>
-                      );
-                    })}
-                  </g>
+                        );
+                      })}
+                      </g>
+                    </>
+                  )}
                 </svg>
 
                 {/* CSS 动画 */}
