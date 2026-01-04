@@ -3439,7 +3439,7 @@ export default function Home() {
                     )}
                   </div>
                   
-                  <div className="grid grid-cols-4 gap-4 mb-6">
+                  <div className="grid grid-cols-2 gap-4 mb-6">
                     <div className="text-center p-4 rounded-lg" style={{ background: '#E8D5D5' }}>
                       <div className="text-2xl font-bold" style={{ color: '#C4715E' }}>
                         {userWave}
@@ -3451,18 +3451,6 @@ export default function Home() {
                         {user?.trustScore || 50}
                       </div>
                       <div className="text-caption mt-1" style={{ color: '#5A5A5A' }}>信任评分</div>
-                    </div>
-                    <div className="text-center p-4 rounded-lg" style={{ background: '#E8D5D5' }}>
-                      <div className="text-2xl font-bold" style={{ color: '#C4715E' }}>
-                        {user?.totalHelps || 0}
-                      </div>
-                      <div className="text-caption mt-1" style={{ color: '#5A5A5A' }}>提供帮助</div>
-                    </div>
-                    <div className="text-center p-4 rounded-lg" style={{ background: '#E8D5D5' }}>
-                      <div className="text-2xl font-bold" style={{ color: '#C4715E' }}>
-                        {user?.totalReceived || 0}
-                      </div>
-                      <div className="text-caption mt-1" style={{ color: '#5A5A5A' }}>接受帮助</div>
                     </div>
                   </div>
 
