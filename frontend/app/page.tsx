@@ -37,7 +37,7 @@ const CONTRACT_ABI = [
 ];
 
 // 合约地址（每次重新部署后需要更新）
-const CONTRACT_ADDRESS = "0x65B7F317f4D44C4dC9b57431CF1e78394eb8E11b"; // Sepolia 测试网
+const CONTRACT_ADDRESS = "0x148494D47109e5f3003b237701a5aF867035d731"; // Sepolia 测试网
 
 // Sepolia 测试网配置
 const SEPOLIA_CHAIN_CONFIG = {
@@ -611,6 +611,22 @@ export default function Home() {
       }
     }
   }, [networkNodes]);
+
+  // 预加载 map.png 图片
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    
+    const img = new Image();
+    img.onload = () => {
+      setMapImageLoaded(true);
+    };
+    img.onerror = () => {
+      // 即使加载失败，也设置为true，避免一直等待
+      console.warn('map.png 加载失败');
+      setMapImageLoaded(true);
+    };
+    img.src = '/map.png';
+  }, []);
   
   // 保存节点位置到 localStorage
   const saveNodePositions = (updatedNodes: NetworkNode[]) => {
@@ -1893,19 +1909,35 @@ export default function Home() {
     
     // 帮助者（helperAddress）的 totalHelps +1
     // 如果帮助者是当前用户，立即更新前端状态
-    if (helperAddress && helperAddress.toLowerCase() === account.toLowerCase()) {
-      if (user) {
-        setUser({
-          ...user,
-          totalHelps: (user.totalHelps || 0) + 1,
-          // 帮助者获得 +1 Wave
-          wave: (user.wave || 0) + 1
-        });
+    if (helperAddress) {
+      if (helperAddress.toLowerCase() === account?.toLowerCase()) {
+        // 帮助者是当前用户，更新当前用户的帮助次数
+        if (user) {
+          setUser({
+            ...user,
+            totalHelps: (user.totalHelps || 0) + 1,
+            // 帮助者获得 +1 Wave
+            wave: (user.wave || 0) + 1
+          });
+        }
+      }
+      
+      // 无论帮助者是否是当前用户，都需要从链上重新加载帮助者的用户信息
+      // 这样确保帮助者的帮助次数能够正确更新（如果帮助者是当前用户，会合并更新）
+      if (contract && helperAddress) {
+        setTimeout(async () => {
+          try {
+            await loadUser(helperAddress, contract);
+            console.log('✅ 帮助者用户信息已更新');
+          } catch (error) {
+            console.warn('⚠️ 加载帮助者用户信息失败:', error);
+          }
+        }, 500);
       }
     }
     
     // 注意：由于链上数据可能还没有更新（因为还没有调用合约），
-    // 我们不应该立即重新加载用户信息，否则会覆盖掉前端的更新
+    // 我们不应该立即重新加载当前用户信息，否则会覆盖掉前端的更新
     // 只有在链上数据确实更新后，才重新加载
     // TODO: 未来对接合约后，在链上数据更新完成后再重新加载
 
